@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block page_header %}
+      <div class="max-w-6xl mx-auto">
+        <div class="flex flex-wrap items-center justify-end gap-2 mb-2 pr-1">
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">← Dashboard</a>
+            <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
+            <button id="zcDebugToggle" type="button" title="Toggle debug" aria-label="Toggle debug" class="px-2.5 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 opacity-60 text-sm"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
+        </div>
+      </div>
+{% endblock %}
+{% block content %}
+
+<div class="max-w-6xl mx-auto">
+  <div class="bg-slate-900 rounded-xl p-4 border border-slate-800">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <div class="text-xl font-bold">Critiques</div>
+        <div class="text-xs text-slate-400">Feedback and issues for Anvil / Workshop / Forge.</div>
+      </div>
+      <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/dashboard">Back to Anvil</a>
+    </div>
+
+    <div class="mt-4 space-y-2">
+      {% for c in critiques %}
+        <div class="rounded border border-slate-700 bg-slate-950/20 px-3 py-2">
+          <div class="text-sm text-slate-200">{{ c['content'] }}</div>
+          <div class="text-xs text-slate-400">{{ c['created_at'] }}</div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <details class="mt-6 rounded border border-slate-700 bg-slate-950/20 p-3">
+      <summary class="cursor-pointer select-none font-semibold">Add critique</summary>
+      <form method="post" action="/critiques" class="space-y-2 mt-3">
+        <div>
+          <label class="block text-sm text-slate-400 mb-1">Title</label>
+          <input class="w-full px-3 py-2 rounded bg-slate-950 border border-slate-800" name="title" placeholder="Critique title" required />
+        </div>
+        <div>
+          <label class="block text-sm text-slate-400 mb-1">Details</label>
+          <textarea class="w-full px-3 py-2 rounded bg-slate-950 border border-slate-800" name="body" rows="4" placeholder="Describe the issue or feedback..."></textarea>
+        </div>
+        <div class="flex gap-3">
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Severity</label>
+            <select name="severity" class="px-3 py-2 rounded bg-slate-950 border border-slate-800">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1">Task ID (optional)</label>
+            <input class="px-3 py-2 rounded bg-slate-950 border border-slate-800 w-24" name="task_id" placeholder="#" />
+          </div>
+        </div>
+        <button class="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold">Submit</button>
+      </form>
+    </details>
+  </div>
+</div>
+
+{% endblock %}

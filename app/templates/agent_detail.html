@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block page_header %}
+      <div class="max-w-6xl mx-auto">
+        <div class="flex flex-wrap items-center justify-end gap-2 mb-2 pr-1">
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">&#8592; Dashboard</a>
+            <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
+            <button id="zcDebugToggle" type="button" title="Toggle debug" aria-label="Toggle debug" class="px-2.5 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 opacity-60 text-sm"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
+        </div>
+      </div>
+</div>
+{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto">
+<div class="bg-slate-900 rounded-xl p-4 border border-slate-800">
+  <div class="text-xl font-bold">Agent #{{ agent['id'] }} — {{ agent['name'] }}</div>
+  <div class="text-sm text-slate-300 zc-debug hidden">Created {{ agent['created_at'] }} • Updated {{ agent['updated_at'] }}</div>
+
+  <form class="mt-4 space-y-3" method="post" action="/agents/{{ agent['id'] }}/update">
+    <div>
+      <label class="text-sm text-slate-300">Name</label>
+      <input name="name" value="{{ agent['name'] }}" required class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700" />
+    </div>
+
+    <div>
+      <label class="text-sm text-slate-300">Role</label>
+      <select name="role" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700">
+        {% for r in roles %}
+          <option value="{{ r }}" {% if r==agent['role'] %}selected{% endif %}>{{ r }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="text-sm text-slate-300">Model</label>
+      <input name="model" value="{{ agent['model'] }}" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700" />
+    </div>
+
+    <label class="flex items-center gap-2 text-sm">
+      <input type="checkbox" name="is_active" {% if agent['is_active'] %}checked{% endif %} />
+      Active
+    </label>
+
+    <button class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 font-semibold">Save</button>
+  </form>
+</div>
+</div>
+{% endblock %}

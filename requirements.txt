@@ -1,0 +1,15 @@
+# Prefer apt packages in this container.
+fastapi
+uvicorn
+jinja2
+python-multipart
+markdown2
+apscheduler
+httpx
+python-dotenv
+
+croniter
+
+langchain-core
+langchain-openai
+langgraph

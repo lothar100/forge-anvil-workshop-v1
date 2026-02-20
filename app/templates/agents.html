@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block page_header %}
+      <div class="max-w-6xl mx-auto">
+        <div class="flex flex-wrap items-center justify-end gap-2 mb-2 pr-1">
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">← Dashboard</a>
+            <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
+            <button id="zcDebugToggle" type="button" title="Toggle debug" aria-label="Toggle debug" class="px-2.5 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 opacity-60 text-sm"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
+        </div>
+      </div>
+<script>
+  setInterval(()=>{ window.location.reload(); }, 15000);
+</script>
+{% endblock %}
+{% block content %}
+
+<div class="max-w-6xl mx-auto">
+  <div class="bg-slate-900 rounded-xl p-4 border border-slate-800">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <div class="text-xl font-bold">Workshop</div>
+        <div class="text-xs text-slate-400">Open Claw — The Office Layer</div>
+      </div>
+      <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/dashboard">Back to Anvil</a>
+    </div>
+
+    <div class="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="lg:col-span-2">
+        <div class="space-y-2">
+          {% set role_map = {'programming':'Ada','architecture':'Jorven','reviewing':'Iris','reporting':'Quimby',
+                             'programmer':'Ada','architect':'Jorven','reviewer':'Iris','reporter':'Quimby'} %}
+          {% for a in agents %}
+            {% set name = role_map.get((a['role'] or '')|lower, role_map.get((a['name'] or '')|lower, a['name'])) %}
+            <a href="/agents/{{ a['id'] }}" class="block rounded border border-slate-700 bg-slate-950/20 px-3 py-2 hover:bg-slate-800">
+              <div class="flex items-center justify-between">
+                <div class="font-semibold">{{ name }}</div>
+                {% set running_jobs = (running_by_agent.get(a['id'], 0) if running_by_agent is defined else 0) %}
+              {% if running_jobs > 0 %}
+                  <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200">RUNNING</span>
+                {% else %}
+                  <span class="text-xs px-2 py-0.5 rounded bg-slate-500/20 border border-slate-500/40 text-slate-200">IDLE</span>
+                {% endif %}
+              </div>
+              <div class="text-xs text-slate-400">{{ a['role'] }}</div>
+              <div class="text-xs text-slate-300 zc-debug hidden">role={{a['role']}} • model={{ a['model']|default('', true) }}</div>
+            </a>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div>
+        <details class="rounded border border-slate-700 bg-slate-950/20 p-3">
+          <summary class="cursor-pointer select-none font-semibold">Add agent</summary>
+          <form method="post" action="/agents/create" class="space-y-2 mt-3">
+            <input class="w-full px-3 py-2 rounded bg-slate-950 border border-slate-800" name="name" placeholder="internal name" />
+            <input class="w-full px-3 py-2 rounded bg-slate-950 border border-slate-800" name="role" placeholder="role (programmer/architect/reviewer/reporter)" />
+            <input class="w-full px-3 py-2 rounded bg-slate-950 border border-slate-800" name="model" placeholder="model (optional)" />
+            <button class="w-full px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold">Create</button>
+          </form>
+        </details>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

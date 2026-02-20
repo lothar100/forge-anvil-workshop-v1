@@ -1,0 +1,13 @@
+services:
+  zeroclaw:
+    container_name: zeroclaw
+    build: .
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/version"]
+      interval: 10s
+      timeout: 2s
+      retries: 12
+      start_period: 20s

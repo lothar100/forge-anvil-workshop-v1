@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block page_header %}
+      <div class="max-w-6xl mx-auto">
+        <div class="flex flex-wrap items-center justify-end gap-2 mb-2 pr-1">
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">&#8592; Dashboard</a>
+            <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
+            <button id="zcDebugToggle" type="button" title="Toggle debug" aria-label="Toggle debug" class="px-2.5 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 opacity-60 text-sm"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
+        </div>
+      </div>
+{% endblock %}
+{% block content %}
+
+<div class="max-w-6xl mx-auto">
+  <div class="bg-slate-900 rounded-xl p-4 border border-slate-800">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <div class="text-xl font-bold">Routines</div>
+        <div class="text-xs text-slate-400">Automation rules that keep Anvil moving.</div>
+      </div>
+      <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/dashboard">Back to Anvil</a>
+    </div>
+
+    <!-- Existing routines -->
+    <div class="mt-4 space-y-3">
+      {% for r in routines %}
+        <div class="rounded border border-slate-700 bg-slate-950/20 px-4 py-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="font-semibold break-words">{{ r['name'] }}</div>
+              <div class="text-sm text-slate-300 mt-1">{{ r['description'] or '' }}</div>
+              <div class="text-xs text-slate-400 zc-debug hidden mt-1">id={{ r['id'] }} &bull; kind={{ r['kind'] }} &bull; agent={{ r['agent_id'] or 'all' }} &bull; claim={{ r['claim_unassigned'] }}</div>
+              <div class="flex items-center gap-2 mt-2">
+                <span class="text-xs px-2 py-0.5 rounded {% if r['is_enabled'] %}bg-emerald-900 text-emerald-300{% else %}bg-slate-800 text-slate-400{% endif %}">{% if r['is_enabled'] %}ACTIVE{% else %}PAUSED{% endif %}</span>
+                <span class="text-xs text-slate-500">{{ r['kind'] }}</span>
+              </div>
+            </div>
+
+            <div class="flex flex-col gap-2 shrink-0">
+              <form method="post" action="/routines/{{ r['id'] }}/toggle">
+                <button class="w-full px-3 py-1.5 rounded text-sm {% if r['is_enabled'] %}bg-emerald-700 hover:bg-emerald-600{% else %}bg-slate-800 border border-slate-700 hover:bg-slate-700{% endif %}">
+                  {% if r['is_enabled'] %}Disable{% else %}Enable{% endif %}
+                </button>
+              </form>
+              <details class="w-full">
+                <summary class="w-full px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 cursor-pointer text-center text-sm">Edit</summary>
+                <form method="post" action="/routines/{{ r['id'] }}/update" class="mt-2 space-y-2">
+                  <textarea name="prompt" rows="3" class="w-full px-3 py-2 rounded bg-slate-950 border border-slate-800 text-sm" placeholder="Describe what this routine should do...">{{ r['description'] or r['name'] }}</textarea>
+                  <button class="w-full px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 font-semibold text-sm" type="submit">Update</button>
+                </form>
+              </details>
+              <form method="post" action="/routines/{{ r['id'] }}/delete" onsubmit="return confirm('Delete this routine?')">
+                <button class="w-full px-3 py-1.5 rounded bg-rose-800 hover:bg-rose-700 text-sm">Delete</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+
+      {% if routines|length == 0 %}
+        <div class="text-sm text-slate-300">No routines yet.</div>
+      {% endif %}
+    </div>
+
+    <!-- Create new routine -->
+    <div class="mt-4 rounded border border-slate-700 bg-slate-950/20 p-4">
+      <div class="text-lg font-semibold mb-2">New Routine</div>
+      <form method="post" action="/routines/create" class="space-y-2">
+        <textarea name="prompt" rows="3" class="w-full px-3 py-2 rounded bg-slate-950 border border-slate-800" placeholder="Describe your routine... e.g. 'Auto-start approved tasks when agents are idle' or 'Create review tasks for items in dev done'" required></textarea>
+        <button class="px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold">Create Routine</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

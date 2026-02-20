@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+  <head>
+    <meta http-equiv="Cache-Control" content="no-store" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title or 'Anvil' }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-slate-950 text-slate-100 overflow-x-hidden">
+
+    <div class="max-w-[2600px] mx-auto px-4 pt-12 pb-4">
+      {% block page_header %}
+      <header class="mb-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <a href="/dashboard" class="text-2xl font-bold tracking-tight">Anvil</a>
+            <div class="text-sm text-slate-300">Zero Claw — Secure Task Manager Layer</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">← Dashboard</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/tasks/new">+ New task</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
+          </div>
+          <span class="text-xs text-slate-400 zc-debug hidden">Build: {{ build_id if build_id else '' }} • {{ now }}</span>
+        </div>
+      </header>
+      {% endblock %}
+
+      {% block content %}{% endblock %}
+
+      <footer class="mt-10 text-xs text-slate-500">
+        <span class="zc-debug hidden">Task + Agent dashboard • approvals via email • {{ now }}</span>
+      </footer>
+    </div>
+
+    <script>
+      (function(){
+        function apply(){
+          const on = localStorage.getItem('zc_debug') === '1';
+          document.querySelectorAll('.zc-debug').forEach(el => {
+            if (on) el.classList.remove('hidden');
+            else el.classList.add('hidden');
+          });
+          const btn = document.getElementById('zcDebugToggle');
+          if(btn) btn.style.opacity = on ? '1' : '0.6';
+        }
+        function toggle(){
+          const cur = localStorage.getItem('zc_debug') === '1';
+          localStorage.setItem('zc_debug', cur ? '0' : '1');
+          apply();
+        }
+        document.addEventListener('DOMContentLoaded', function(){
+          if (localStorage.getItem('zc_debug') === null) localStorage.setItem('zc_debug','0');
+          document.getElementById('zcDebugToggle')?.addEventListener('click', toggle);
+          apply();
+        });
+      })();
+    </script>
+  </body>
+</html>
