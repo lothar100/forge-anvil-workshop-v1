@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(zip:*)",
+      "Bash(python -c:*)"
+    ]
+  }
+}

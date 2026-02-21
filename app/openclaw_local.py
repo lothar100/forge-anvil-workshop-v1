@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .openclaw_langgraph_runtime import run_job_langgraph
+from .executor import execute_task
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
@@ -75,10 +75,18 @@ def init_db() -> None:
           result TEXT NOT NULL DEFAULT '',
           error TEXT NULL,
           logs TEXT NOT NULL DEFAULT '',
-          used_model TEXT NULL
+          used_model TEXT NULL,
+          executor TEXT NULL,
+          fallback_reason TEXT NULL
         );
         """
     )
+    # Migrate: add executor columns if missing (for existing databases)
+    existing_cols = {r[1] for r in con.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "executor" not in existing_cols:
+        con.execute("ALTER TABLE jobs ADD COLUMN executor TEXT NULL")
+    if "fallback_reason" not in existing_cols:
+        con.execute("ALTER TABLE jobs ADD COLUMN fallback_reason TEXT NULL")
     con.commit()
     con.close()
 
@@ -91,7 +99,7 @@ def _append_log(con: sqlite3.Connection, job_id: str, line: str) -> None:
 
 
 def _run_job(job_id: str) -> None:
-    """LangGraph-based local executor (OpenRouter-backed)."""
+    """Dual executor: Claude CLI (primary) -> OpenRouter/LangGraph (fallback)."""
     con = _connect()
     con.execute("UPDATE jobs SET status='running', started_at=? WHERE job_id=?", (utcnow_iso(), job_id))
     _append_log(con, job_id, f"[{utcnow_iso()}] started")
@@ -101,23 +109,25 @@ def _run_job(job_id: str) -> None:
         row = con.execute("SELECT payload FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         payload = json.loads(row["payload"]) if row and row["payload"] else {}
 
-        _append_log(con, job_id, f"[{utcnow_iso()}] invoking_langgraph")
+        _append_log(con, job_id, f"[{utcnow_iso()}] invoking_executor (claude_cli -> openrouter fallback)")
         con.commit()
         # Guard against jobs that never return (network/LLM hang)
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(run_job_langgraph, payload=payload)
+            fut = ex.submit(execute_task, payload=payload)
             try:
                 r = fut.result(timeout=OPENCLAW_JOB_TIMEOUT_SECONDS)
             except concurrent.futures.TimeoutError:
                 fut.cancel()
-                r = {'ok': False, 'error': f'timeout_after_{OPENCLAW_JOB_TIMEOUT_SECONDS}s'}
+                r = {'ok': False, 'error': f'timeout_after_{OPENCLAW_JOB_TIMEOUT_SECONDS}s', 'executor': 'timeout'}
+        executor = str(r.get('executor') or 'unknown')
+        fallback_reason = str(r.get('fallback_reason') or '')
         if not r.get('ok'):
             err = str(r.get('error') or 'unknown_error')
             con.execute(
-                "UPDATE jobs SET status='failed', finished_at=?, error=? WHERE job_id=?",
-                (utcnow_iso(), err, job_id),
+                "UPDATE jobs SET status='failed', finished_at=?, error=?, executor=?, fallback_reason=? WHERE job_id=?",
+                (utcnow_iso(), err, executor, fallback_reason, job_id),
             )
-            _append_log(con, job_id, f"[{utcnow_iso()}] failed: {err}")
+            _append_log(con, job_id, f"[{utcnow_iso()}] failed: {err} (executor={executor})")
             con.commit()
             con.close()
             return
@@ -125,10 +135,10 @@ def _run_job(job_id: str) -> None:
         out = str(r.get('output') or '')
         used_model = str(r.get('used_model') or '')
         con.execute(
-            "UPDATE jobs SET status='completed', finished_at=?, result=?, used_model=? WHERE job_id=?",
-            (utcnow_iso(), out, used_model, job_id),
+            "UPDATE jobs SET status='completed', finished_at=?, result=?, used_model=?, executor=?, fallback_reason=? WHERE job_id=?",
+            (utcnow_iso(), out, used_model, executor, fallback_reason, job_id),
         )
-        _append_log(con, job_id, f"[{utcnow_iso()}] completed")
+        _append_log(con, job_id, f"[{utcnow_iso()}] completed (executor={executor})")
         con.commit()
         con.close()
         return
@@ -136,8 +146,8 @@ def _run_job(job_id: str) -> None:
     except Exception as e:
         err = f"runner_exception: {e}"
         con.execute(
-            "UPDATE jobs SET status='failed', finished_at=?, error=? WHERE job_id=?",
-            (utcnow_iso(), err, job_id),
+            "UPDATE jobs SET status='failed', finished_at=?, error=?, executor=?, fallback_reason=? WHERE job_id=?",
+            (utcnow_iso(), err, 'exception', '', job_id),
         )
         _append_log(con, job_id, f"[{utcnow_iso()}] failed: {err}")
         con.commit()
@@ -223,5 +233,7 @@ async def status(job_id: str, request: Request) -> JSONResponse:
             "result": out["result"],
             "error": out["error"],
             "logs": out["logs"],
+            "executor": out.get("executor") or "",
+            "fallback_reason": out.get("fallback_reason") or "",
         }
     )

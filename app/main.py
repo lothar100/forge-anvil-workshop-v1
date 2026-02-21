@@ -1099,7 +1099,12 @@ def _poll_openclaw_jobs() -> None:
                     else:
                         con.execute("UPDATE tasks SET status='dev_done', updated_at=? WHERE id=?", (utcnow_iso(), t['id']))
 
-        con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'openclaw_polled', 'task', str(t['id']), f'state={state}', 'openclaw', str((payload.get('used_model') or payload.get('agent_model') or payload.get('model') or '')) or None))
+        executor = str(payload.get('executor') or '')
+        fallback_reason = str(payload.get('fallback_reason') or '')
+        poll_detail = f'state={state} executor={executor}'
+        if fallback_reason:
+            poll_detail += f' fallback_reason={fallback_reason}'
+        con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'openclaw_polled', 'task', str(t['id']), poll_detail, 'openclaw', str((payload.get('used_model') or payload.get('agent_model') or payload.get('model') or '')) or None))
         con.commit()
 
     con.close()
