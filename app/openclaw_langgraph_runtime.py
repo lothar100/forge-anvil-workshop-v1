@@ -69,7 +69,9 @@ def run_job_langgraph(*, payload: dict[str, Any]) -> dict[str, Any]:
         },
     )
 
-    sys = _role_system_prompt(role)
+    # Allow pipeline executor to inject a custom system prompt
+    sys_override = agent.get("_system_prompt_override", "")
+    sys = sys_override if sys_override else _role_system_prompt(role)
     user = (
         f"Task Title: {title}\n\n"
         f"Task Description:\n{desc}\n\n"

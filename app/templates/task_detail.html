@@ -5,13 +5,13 @@
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">&#8592; Dashboard</a>
             <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/pipelines">Pipelines</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
             <button id="zcDebugToggle" type="button" title="Toggle debug" aria-label="Toggle debug" class="px-2.5 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 opacity-60 text-sm"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
         </div>
       </div>
-</div>
 {% endblock %}
 {% block content %}
 <div class="max-w-6xl mx-auto">
@@ -22,9 +22,25 @@
       <div class="text-sm text-slate-300 zc-debug hidden">Created {{ task['created_at'] }} • Updated {{ task['updated_at'] }}</div>
     </div>
     <div class="text-sm">
-      <div class="inline-block px-3 py-1 rounded bg-slate-800 border border-slate-700">Status: <b>{{ task['status'] }}</b></div>
+      {% if task['status'] == 'paused_limit' %}
+        <div class="inline-block px-3 py-1 rounded bg-amber-800/50 border border-amber-700 text-amber-200">Status: <b>Paused (waiting for Claude CLI)</b></div>
+      {% elif task['status'] == 'queued_for_claude' %}
+        <div class="inline-block px-3 py-1 rounded bg-amber-800/50 border border-amber-700 text-amber-200">Status: <b>Queued for Claude CLI</b></div>
+      {% else %}
+        <div class="inline-block px-3 py-1 rounded bg-slate-800 border border-slate-700">Status: <b>{{ task['status'] }}</b></div>
+      {% endif %}
     </div>
   </div>
+
+  {% if task['status'] in ('paused_limit', 'queued_for_claude') %}
+  <div class="mt-3 rounded bg-amber-900/30 border border-amber-700 p-3 text-sm text-amber-200">
+    {% if task['status'] == 'paused_limit' %}
+      This task is paused at pipeline block #{{ task.get('resume_block_index', '?') }} because Claude CLI is unavailable. It will auto-resume when Claude CLI recovers.
+    {% else %}
+      This task is queued for Claude CLI execution at block #{{ task.get('resume_block_index', '?') }}. It will run when Claude CLI becomes available.
+    {% endif %}
+  </div>
+  {% endif %}
 
   <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div>
@@ -33,7 +49,7 @@
 
       {% if task['last_result'] %}
       <div class="mt-4 font-semibold">Last result</div>
-      <pre class="mt-2 whitespace-pre-wrap bg-slate-800 border border-slate-700 rounded p-3 text-sm">{{ task['last_result'] }}</pre>
+      <pre class="mt-2 whitespace-pre-wrap bg-slate-800 border border-slate-700 rounded p-3 text-sm max-h-[60vh] overflow-auto">{{ task['last_result'] }}</pre>
       {% endif %}
 
       {% if task['review_summary'] %}
@@ -96,7 +112,6 @@
         <button class="px-4 py-2 rounded bg-rose-700 hover:bg-rose-600 font-semibold" type="submit">Delete task</button>
       </form>
 
-
       {% if task['status']=='pending' and task['requires_approval'] %}
       <form class="mt-4" method="post" action="/tasks/{{ task['id'] }}/complete">
         <button class="px-4 py-2 rounded bg-amber-600 hover:bg-amber-500 font-semibold">Resend approval email</button>
@@ -109,5 +124,66 @@
     </div>
   </div>
 </div>
+
+<!-- Executor Log -->
+{% if executor_logs %}
+<div class="mt-4 bg-slate-900 rounded-xl p-4 border border-slate-800">
+  <div class="font-bold mb-3">Pipeline Execution Log</div>
+  <div class="overflow-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-xs text-slate-400 border-b border-slate-800">
+          <th class="p-2 text-left">Block</th>
+          <th class="p-2 text-left">Type</th>
+          <th class="p-2 text-left">Model</th>
+          <th class="p-2 text-left">Executor</th>
+          <th class="p-2 text-left">Duration</th>
+          <th class="p-2 text-left">Result</th>
+          <th class="p-2 text-left">Failure</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in executor_logs %}
+        <tr class="border-t border-slate-800">
+          <td class="p-2 font-mono text-xs">#{{ log['block_index'] }}</td>
+          <td class="p-2">
+            {% if log['block_type'] == 'executor' %}<span class="text-amber-300">{{ log['block_type'] }}</span>
+            {% elif log['block_type'] == 'review' %}<span class="text-purple-300">{{ log['block_type'] }}</span>
+            {% elif log['block_type'] == 'retry' %}<span class="text-blue-300">{{ log['block_type'] }}</span>
+            {% elif log['block_type'] == 'escalate' %}<span class="text-red-300">{{ log['block_type'] }}</span>
+            {% else %}{{ log['block_type'] }}{% endif %}
+          </td>
+          <td class="p-2 text-xs text-slate-300">{{ log['model'] or '' }}</td>
+          <td class="p-2 text-xs">{{ log['executor'] or '' }}</td>
+          <td class="p-2 text-xs font-mono">{{ '%.1f'|format(log['duration_seconds'] or 0) }}s</td>
+          <td class="p-2">
+            {% if log['pass_fail'] == 'pass' %}<span class="text-emerald-400">PASS</span>
+            {% elif log['pass_fail'] == 'fail' %}<span class="text-rose-400">FAIL</span>
+            {% elif log['success'] %}<span class="text-emerald-400">OK</span>
+            {% else %}<span class="text-rose-400">ERR</span>{% endif %}
+          </td>
+          <td class="p-2 text-xs text-slate-400">{{ log['failure_type'] or '' }}</td>
+        </tr>
+        {% if log['review_notes'] %}
+        <tr class="border-t border-slate-800/50">
+          <td colspan="7" class="p-2 text-xs text-slate-400">
+            <details><summary class="cursor-pointer">Review notes</summary>
+            <pre class="whitespace-pre-wrap mt-1 text-slate-300">{{ log['review_notes'][:500] }}</pre>
+            </details>
+          </td>
+        </tr>
+        {% endif %}
+        {% if log['error'] %}
+        <tr class="border-t border-slate-800/50">
+          <td colspan="7" class="p-2 text-xs text-rose-400">Error: {{ log['error'][:300] }}</td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 </div>
 {% endblock %}

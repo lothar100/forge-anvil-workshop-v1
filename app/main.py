@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import os
-import sys
 import json
+import os
+import re
 import subprocess
 import socket
 import secrets
+import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -25,6 +26,9 @@ from .emailer import send_email
 from .approvals import create_decision, verify_decision_token, apply_decision
 from .openclaw import dispatch_job, get_status, normalize_state
 from .routines import router as routines_router, tick_routines
+from .agent_files import ensure_agent_dir, list_agent_files, read_agent_file, write_agent_file, delete_agent_file, rename_agent_dir
+from . import claude_health
+from .pipeline_executor import run_pipeline, resume_pipeline
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
@@ -39,6 +43,7 @@ SCHEDULER_TICK_SECONDS = int(os.getenv("SCHEDULER_TICK_SECONDS", "20"))
 OPENCLAW_POLL_SECONDS = int(os.getenv("OPENCLAW_POLL_SECONDS", "20"))
 SCHEDULE_APPROVAL_LEAD_SECONDS = int(os.getenv("SCHEDULE_APPROVAL_LEAD_SECONDS", "300"))
 OPENCLAW_ENABLED = (os.getenv("OPENCLAW_ENABLED", "1").lower() in ("1","true","yes","on"))
+CLAUDE_CLI_ENABLED = (os.getenv("CLAUDE_CLI_ENABLED", "1").lower() in ("1","true","yes","on"))
 
 DASHBOARD_APPROVALS_ENABLED = (os.getenv("DASHBOARD_APPROVALS_ENABLED", "0").lower() in ("1", "true", "yes", "on"))
 AUTO_CRITICAL_KEYWORDS = [k.strip().lower() for k in os.getenv("AUTO_CRITICAL_KEYWORDS", "security,auth,login,payment,deploy,release,prod,approval").split(",") if k.strip()]
@@ -69,17 +74,14 @@ def _tcp_listening(host: str, port: int) -> bool:
 
 
 def _ensure_local_openclaw() -> None:
-    # Start local OpenClaw API (uvicorn) and set OPENCLAW_BASE_URL/TOKEN automatically.
     enabled = os.getenv('OPENCLAW_LOCAL_ENABLED', '1').lower() in ('1','true','yes','on')
     if not enabled:
         return
 
-    # Default base url to local service
     if not (os.getenv('OPENCLAW_BASE_URL') or '').strip():
         os.environ['OPENCLAW_BASE_URL'] = 'http://localhost:9100'
 
     token_file = PROJECT_DIR / 'data' / 'openclaw_token.txt'
-    # Default token
     if not (os.getenv('OPENCLAW_AUTH_TOKEN') or os.getenv('OPENCLAW_TOKEN') or '').strip():
         if token_file.exists():
             tok = token_file.read_text(encoding='utf-8').strip()
@@ -92,10 +94,10 @@ def _ensure_local_openclaw() -> None:
                 pass
         os.environ['OPENCLAW_AUTH_TOKEN'] = tok
 
-    # Spawn if not listening
     if _tcp_listening('127.0.0.1', 9100):
         return
 
+    import sys
     log_path = PROJECT_DIR / 'data' / 'openclaw.log'
     cmd = [sys.executable,'-m','uvicorn','app.openclaw_local:app','--host','0.0.0.0','--port','9100']
     subprocess.Popen(cmd, cwd=str(PROJECT_DIR), stdout=open(log_path, 'ab'), stderr=subprocess.STDOUT)
@@ -103,9 +105,9 @@ def _ensure_local_openclaw() -> None:
 
 
 
-app = FastAPI(title="ZeroClaw", version="0.2.1")
+app = FastAPI(title="ZeroClaw", version="0.3.0")
 
-BUILD_ID = "20260220T085500Z_no_busy_check"
+BUILD_ID = "20260222T000000Z_pipeline_v2"
 
 
 @app.middleware("http")
@@ -117,6 +119,14 @@ async def _stamp_build_header(request, call_next):
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.globals['build_id'] = BUILD_ID
+
+# Register Jinja2 filter for JSON parsing in templates
+def _from_json(value):
+    try:
+        return json.loads(value) if isinstance(value, str) else value
+    except Exception:
+        return []
+templates.env.filters['from_json'] = _from_json
 
 app.include_router(routines_router)
 
@@ -190,20 +200,22 @@ def _maybe_seed_agents() -> None:
         return
 
     seed = [
-        ("Programmer", "programming", os.getenv("MODEL_PROGRAMMING", "openai/gpt-5.2-codex")),
-        ("Architect", "architecture", os.getenv("MODEL_ARCHITECTURE", "anthropic/claude-opus-4.6")),
-        ("Reviewer", "reviewing", os.getenv("MODEL_REVIEW", "anthropic/claude-sonnet-4.5")),
-        ("Reporter", "reporting", os.getenv("MODEL_REPORTING", "anthropic/claude-opus-4.5")),
+        ("Programmer", "programming"),
+        ("Architect", "architecture"),
+        ("Reviewer", "reviewing"),
+        ("Reporter", "reporting"),
     ]
-    for name, role, model in seed:
+    for name, role in seed:
         con.execute(
             "INSERT INTO agents(name, role, model, is_active, created_at, updated_at) VALUES(?,?,?,?,?,?)",
-            (name, role, model, 1, utcnow_iso(), utcnow_iso()),
+            (name, role, "openai/gpt-5.2", 1, utcnow_iso(), utcnow_iso()),
         )
+        # Create agent internal files
+        ensure_agent_dir(name, role)
 
     con.execute(
         "INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)",
-        (utcnow_iso(), "agent_seed", "system", None, f"Seeded {len(seed)} agents"),
+        (utcnow_iso(), "agent_seed", "system", None, f"Seeded {len(seed)} agents", "anvil", None),
     )
     con.commit()
     con.close()
@@ -215,11 +227,10 @@ def _start_scheduler() -> None:
         return
 
     _scheduler = BackgroundScheduler(daemon=True)
-
-    # Always run orchestration loops
     _scheduler.add_job(_tick_scheduled_tasks_safe, 'interval', seconds=SCHEDULER_TICK_SECONDS)
     _scheduler.add_job(_poll_openclaw_safe, 'interval', seconds=OPENCLAW_POLL_SECONDS)
     _scheduler.add_job(_tick_routines_safe, 'interval', seconds=int(os.getenv('ROUTINES_TICK_SECONDS','10')))
+    _scheduler.add_job(_tick_resume_paused_safe, 'interval', seconds=30)
 
     minutes = int(os.getenv('SUMMARY_EMAIL_EVERY_MINUTES', '360'))
     if minutes > 0:
@@ -257,6 +268,37 @@ def _tick_routines_safe() -> None:
         tick_routines()
     except Exception as e:
         _log('routines_tick_error', 'system', None, str(e))
+
+
+def _tick_resume_paused_safe() -> None:
+    """Resume paused/queued tasks when Claude CLI recovers."""
+    try:
+        _tick_resume_paused()
+    except Exception as e:
+        _log('resume_paused_error', 'system', None, str(e))
+
+
+def _tick_resume_paused() -> None:
+    """Check if Claude CLI is healthy and resume paused/queued tasks."""
+    state = claude_health.get_state()
+    if state != claude_health.HEALTHY:
+        return
+
+    con = connect()
+    paused = con.execute("SELECT id FROM tasks WHERE status IN ('paused_limit', 'queued_for_claude')").fetchall()
+    con.close()
+
+    for row in paused:
+        task_id = row['id']
+        try:
+            _log('pipeline_resume', 'task', str(task_id), 'claude_cli recovered, resuming pipeline')
+            # Run in a thread to avoid blocking the scheduler
+            t = threading.Thread(target=resume_pipeline, args=(task_id,), daemon=True)
+            t.start()
+        except Exception as e:
+            _log('pipeline_resume_error', 'task', str(task_id), str(e))
+
+
 def _send_summary_email() -> None:
     if not APPROVER_EMAIL:
         return
@@ -292,12 +334,9 @@ def root() -> RedirectResponse:
 
 @app.get("/version")
 def version() -> dict:
-    import os
     pid = os.getpid()
     cwd = os.getcwd()
-    has_tasks_new = any(getattr(r,'path','')=='/tasks/new' for r in getattr(app,'routes',[]))
-    has_task_new = any(getattr(r,'path','')=='/task/new' for r in getattr(app,'routes',[]))
-    return {"ok": True, "build_id": BUILD_ID, "pid": pid, "cwd": cwd, "has_tasks_new": has_tasks_new, "has_task_new": has_task_new}
+    return {"ok": True, "build_id": BUILD_ID, "pid": pid, "cwd": cwd}
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -306,20 +345,33 @@ def dashboard(request: Request) -> HTMLResponse:
     tasks = con.execute("SELECT * FROM tasks ORDER BY updated_at DESC").fetchall()
     agents = con.execute("SELECT * FROM agents WHERE is_active=1 ORDER BY name").fetchall()
     con.close()
-    cols = ["pending", "approved", "rejected", "active", "blocked", "dev_done", "review", "done"]
+    cols = ["pending", "approved", "rejected", "active", "blocked", "paused_limit", "queued_for_claude", "dev_done", "review", "done"]
     tasks_by_status = {c: [] for c in cols}
+    paused_count = 0
+    queued_count = 0
     for t in tasks:
         st = t["status"]
-        # legacy status mapping
         if st == 'running':
             st = 'active'
         if st == 'completed':
             st = 'dev_done'
+        if st == 'paused_limit':
+            paused_count += 1
+        if st == 'queued_for_claude':
+            queued_count += 1
         if st not in tasks_by_status:
             st = "pending"
         tasks_by_status[st].append(t)
 
+    # Remove empty paused/queued columns
+    if not tasks_by_status['paused_limit']:
+        cols = [c for c in cols if c != 'paused_limit']
+    if not tasks_by_status['queued_for_claude']:
+        cols = [c for c in cols if c != 'queued_for_claude']
+
     tasks_needing_approval = [t for t in tasks if int(t["requires_approval"] or 0) == 1 and t["status"] == "pending"]
+
+    health_state = claude_health.get_state() if CLAUDE_CLI_ENABLED else "HEALTHY"
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -330,6 +382,9 @@ def dashboard(request: Request) -> HTMLResponse:
             "tasks_needing_approval": tasks_needing_approval,
             "agents": agents,
             "now": utcnow_iso(),
+            "claude_health_state": health_state,
+            "paused_count": paused_count,
+            "queued_count": queued_count,
         },
     )
 
@@ -348,7 +403,6 @@ def create_task(
 ) -> RedirectResponse:
     dd = due_date.strip() or None
     aid = int(assigned_agent_id) if assigned_agent_id else None
-    # On create, critical is explicit checkbox
     critical = 1 if is_critical else 0
     schedule_type = (schedule_type or "none").strip()
     cron_expr = (cron_expr or "").strip() or None
@@ -378,10 +432,8 @@ def create_task(
 
     _log("task_created", "task", None, title)
 
-    # Auto-send pre-work approval email for tasks that require approval
     try:
         if critical == 1 and _env_bool('AUTO_EMAIL_APPROVAL_ON_CREATE', True):
-            # fetch last inserted task id
             con = connect()
             row = con.execute("SELECT id FROM tasks ORDER BY id DESC LIMIT 1").fetchone()
             con.close()
@@ -411,15 +463,18 @@ def task_detail(request: Request, task_id: int) -> HTMLResponse:
     con = connect()
     task = con.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
     agents = con.execute("SELECT * FROM agents WHERE is_active=1 ORDER BY name").fetchall()
+    executor_logs = con.execute(
+        "SELECT * FROM executor_log WHERE task_id=? ORDER BY id ASC", (task_id,)
+    ).fetchall()
     con.close()
 
     if not task:
         return HTMLResponse("Task not found", status_code=404)
 
-    statuses = ["pending", "approved", "rejected", "active", "running", "completed", "blocked", "dev_done", "review", "done"]
+    statuses = ["pending", "approved", "rejected", "active", "running", "completed", "blocked", "paused_limit", "queued_for_claude", "dev_done", "review", "done"]
     return templates.TemplateResponse(
         "task_detail.html",
-        {"request": request, "task": task, "agents": agents, "statuses": statuses, "now": utcnow_iso()},
+        {"request": request, "task": task, "agents": agents, "statuses": statuses, "now": utcnow_iso(), "executor_logs": executor_logs},
     )
 
 
@@ -432,11 +487,8 @@ def task_update(
     is_critical: Optional[str] = Form(None),
     description: str = Form(""),
 ) -> RedirectResponse:
-    """Update task fields from the compact task detail form."""
-
     con = connect()
 
-    # agent id parsing: accept numeric id OR agent name
     agent_raw = (assigned_agent_id or "").strip()
     aid = None
     if agent_raw:
@@ -457,8 +509,6 @@ def task_update(
         con.close()
         return RedirectResponse(url="/dashboard", status_code=303)
 
-    # Guard: don't allow using this form to move into approved/rejected unless it was already there.
-    # (Approval should happen via decision links / board approval flow.)
     if int(cur_task["requires_approval"] or 0) == 1 and status in ("approved", "rejected") and str(cur_task["status"]) not in ("approved", "rejected"):
         con.close()
         return HTMLResponse("This task requires approval; use the approval link (email) or the board approval flow.", status_code=403)
@@ -480,7 +530,6 @@ def task_update(
 
 @app.post("/tasks/{task_id}/delete")
 def task_delete(task_id: int) -> RedirectResponse:
-    'Delete a task and related decisions/critiques; keep action_logs for audit.'
     con = connect()
     t = con.execute("SELECT title FROM tasks WHERE id=?", (task_id,)).fetchone()
     title = t["title"] if t else ""
@@ -491,6 +540,10 @@ def task_delete(task_id: int) -> RedirectResponse:
         pass
     try:
         con.execute("DELETE FROM critiques WHERE task_id=?", (str(task_id),))
+    except Exception:
+        pass
+    try:
+        con.execute("DELETE FROM executor_log WHERE task_id=?", (task_id,))
     except Exception:
         pass
 
@@ -519,7 +572,7 @@ async def api_tasks_move(request: Request, payload: dict) -> JSONResponse:
     except Exception:
         return JSONResponse({'ok': False, 'error': 'bad_task_id'}, status_code=400)
     new_status = str(payload.get('to_status') or payload.get('status') or '').strip()
-    allowed = {'pending','approved','rejected','active','running','completed','blocked','dev_done','review','done'}
+    allowed = {'pending','approved','rejected','active','running','completed','blocked','dev_done','review','done','paused_limit','queued_for_claude'}
     if new_status not in allowed:
         return JSONResponse({'ok': False, 'error': 'bad_status'}, status_code=400)
 
@@ -532,12 +585,9 @@ async def api_tasks_move(request: Request, payload: dict) -> JSONResponse:
     req_appr = int(task['requires_approval'] or 0)
     old_status = task['status']
 
-    # Enforce workflow gating: tasks requiring approval cannot start (pending->active) until approved
     if req_appr == 1 and old_status == 'pending' and new_status == 'active':
         return JSONResponse({'ok': False, 'error': 'must_be_approved_first'}, status_code=403)
 
-
-    # Approve/reject by board move (optional feature)
     if new_status in ('approved','rejected') and req_appr == 1:
         if not _env_bool('DASHBOARD_APPROVALS_ENABLED', False):
             return JSONResponse({'ok': False, 'error': 'dashboard_approvals_disabled'}, status_code=403)
@@ -559,7 +609,6 @@ async def api_tasks_move(request: Request, payload: dict) -> JSONResponse:
             ttl_hours=int(os.getenv('APPROVAL_TTL_HOURS', '72')),
             result_markdown=md,
         )
-        # mirror email approval behavior: notify upstream approval server
         try:
             await _upstream_call('/approve' if approve else '/reject', decision_id, token)
         except Exception as e:
@@ -573,7 +622,6 @@ async def api_tasks_move(request: Request, payload: dict) -> JSONResponse:
         )
         return JSONResponse({'ok': True, 'decision_id': decision_id, 'decision_view_url': f"/decision/{decision_id}"})
 
-    # Regular move
     con = connect()
     con.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", (new_status, utcnow_iso(), task_id))
     con.commit()
@@ -584,7 +632,6 @@ async def api_tasks_move(request: Request, payload: dict) -> JSONResponse:
 
 @app.post("/tasks/{task_id}/complete")
 def task_complete(task_id: int) -> RedirectResponse:
-    # Repurposed: request/resend pre-work approval email for pending tasks
     con = connect()
     task = con.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
     con.close()
@@ -606,11 +653,9 @@ def _request_approval_for_task(task_id: int) -> None:
     if not task:
         return
 
-    # Only request approval for pending tasks (pre-work approval)
     if task['status'] != 'pending':
         return
 
-    # Supersede any prior pending start_task decisions for this task
     con2 = connect()
     con2.execute("UPDATE decisions SET status='superseded', updated_at=? WHERE entity_type='task' AND entity_id=? AND action='start_task' AND status='pending'", (utcnow_iso(), task_id))
     con2.commit()
@@ -651,11 +696,12 @@ def _request_approval_for_task(task_id: int) -> None:
     _log("approval_email_sent", "decision", decision_id, f"task_id={task_id} to={APPROVER_EMAIL}")
 
 
+# ── Agent endpoints ──
+
 @app.get("/agents", response_class=HTMLResponse)
 def agents(request: Request) -> HTMLResponse:
     con = connect()
     agents_ = con.execute("SELECT * FROM agents ORDER BY updated_at DESC").fetchall()
-    # running = any task currently executing for that agent
     running_rows = con.execute("""
         SELECT assigned_agent_id AS agent_id, COUNT(*) AS c
         FROM tasks
@@ -666,11 +712,20 @@ def agents(request: Request) -> HTMLResponse:
     running_by_agent = {str(r['agent_id']): int(r['c']) for r in running_rows}
     con.close()
     roles = ["programming", "reporting", "reviewing", "architecture", "general"]
-    return templates.TemplateResponse("agents.html", {"request": request, "agents": agents_,
+
+    # Add agent file info
+    agents_with_files = []
+    for a in agents_:
+        a_dict = dict(a)
+        a_dict['files'] = list_agent_files(a['name'])
+        agents_with_files.append(a_dict)
+
+    return templates.TemplateResponse("agents.html", {"request": request, "agents": agents_with_files,
             "running_by_agent": running_by_agent, "roles": roles, "now": utcnow_iso()})
 
 
 @app.post("/agents")
+@app.post("/agents/create")
 def create_agent(name: str = Form(...), role: str = Form("general"), model: str = Form("openai/gpt-5.2")) -> RedirectResponse:
     con = connect()
     con.execute(
@@ -679,6 +734,8 @@ def create_agent(name: str = Form(...), role: str = Form("general"), model: str 
     )
     con.commit()
     con.close()
+    # Create agent internal files
+    ensure_agent_dir(name, role)
     _log("agent_created", "agent", None, name)
     return RedirectResponse(url="/agents", status_code=303)
 
@@ -687,24 +744,76 @@ def create_agent(name: str = Form(...), role: str = Form("general"), model: str 
 def agent_detail(request: Request, agent_id: int) -> HTMLResponse:
     con = connect()
     a = con.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
+    pipelines = con.execute("SELECT id, name, task_type FROM pipelines WHERE is_active=1 ORDER BY name").fetchall()
     con.close()
     if not a:
         return HTMLResponse("Agent not found", status_code=404)
     roles = ["programming", "reporting", "reviewing", "architecture", "general"]
-    return templates.TemplateResponse("agent_detail.html", {"request": request, "agent": a, "roles": roles, "now": utcnow_iso()})
+
+    # Ensure agent files exist
+    ensure_agent_dir(a['name'], a['role'])
+    agent_files = list_agent_files(a['name'])
+    file_contents = {f: read_agent_file(a['name'], f) for f in agent_files}
+
+    return templates.TemplateResponse("agent_detail.html", {
+        "request": request, "agent": a, "roles": roles, "now": utcnow_iso(),
+        "pipelines": pipelines, "agent_files": agent_files, "file_contents": file_contents,
+    })
 
 
 @app.post("/agents/{agent_id}/update")
-def agent_update(agent_id: int, name: str = Form(...), role: str = Form("general"), model: str = Form("openai/gpt-5.2"), is_active: Optional[str] = Form(None)) -> RedirectResponse:
+def agent_update(agent_id: int, name: str = Form(...), role: str = Form("general"), pipeline_id: str = Form(""), is_active: Optional[str] = Form(None)) -> RedirectResponse:
     active = 1 if is_active else 0
+    pid = int(pipeline_id) if pipeline_id.strip() else None
     con = connect()
+    # Check if name changed for file rename
+    old = con.execute("SELECT name FROM agents WHERE id=?", (agent_id,)).fetchone()
+    old_name = old['name'] if old else name
     con.execute(
-        "UPDATE agents SET name=?, role=?, model=?, is_active=?, updated_at=? WHERE id=?",
-        (name, role, model, active, utcnow_iso(), agent_id),
+        "UPDATE agents SET name=?, role=?, pipeline_id=?, is_active=?, updated_at=? WHERE id=?",
+        (name, role, pid, active, utcnow_iso(), agent_id),
     )
     con.commit()
     con.close()
-    _log("agent_updated", "agent", str(agent_id), f"role={role} model={model}")
+    if old_name != name:
+        rename_agent_dir(old_name, name)
+    ensure_agent_dir(name, role)
+    _log("agent_updated", "agent", str(agent_id), f"role={role} pipeline_id={pid}")
+    return RedirectResponse(url=f"/agents/{agent_id}", status_code=303)
+
+
+@app.post("/agents/{agent_id}/files/{filename}")
+def agent_file_save(agent_id: int, filename: str, content: str = Form("")) -> RedirectResponse:
+    con = connect()
+    a = con.execute("SELECT name FROM agents WHERE id=?", (agent_id,)).fetchone()
+    con.close()
+    if not a:
+        return RedirectResponse(url="/agents", status_code=303)
+    write_agent_file(a['name'], filename, content)
+    _log("agent_file_saved", "agent", str(agent_id), filename)
+    return RedirectResponse(url=f"/agents/{agent_id}", status_code=303)
+
+
+@app.post("/agents/{agent_id}/files/new")
+def agent_file_new(agent_id: int, filename: str = Form(...)) -> RedirectResponse:
+    con = connect()
+    a = con.execute("SELECT name, role FROM agents WHERE id=?", (agent_id,)).fetchone()
+    con.close()
+    if not a:
+        return RedirectResponse(url="/agents", status_code=303)
+    if not filename.endswith('.md'):
+        filename = filename + '.md'
+    write_agent_file(a['name'], filename, f"# {a['name']} — {filename}\n\n")
+    return RedirectResponse(url=f"/agents/{agent_id}", status_code=303)
+
+
+@app.get("/agents/{agent_id}/files/{filename}/delete")
+def agent_file_delete_route(agent_id: int, filename: str) -> RedirectResponse:
+    con = connect()
+    a = con.execute("SELECT name FROM agents WHERE id=?", (agent_id,)).fetchone()
+    con.close()
+    if a:
+        delete_agent_file(a['name'], filename)
     return RedirectResponse(url=f"/agents/{agent_id}", status_code=303)
 
 
@@ -716,6 +825,96 @@ async def api_agent_report(payload: dict) -> JSONResponse:
     _log("agent_report", "agent", str(agent_id), f"task={task_id} msg={msg}")
     return JSONResponse({"ok": True})
 
+
+# ── Pipeline endpoints ──
+
+@app.get("/pipelines", response_class=HTMLResponse)
+def pipelines_page(request: Request, selected: int = 0) -> HTMLResponse:
+    con = connect()
+    pipelines = con.execute("SELECT * FROM pipelines ORDER BY updated_at DESC").fetchall()
+    selected_pipeline = None
+    if selected:
+        selected_pipeline = con.execute("SELECT * FROM pipelines WHERE id=?", (selected,)).fetchone()
+    elif pipelines:
+        selected_pipeline = pipelines[0]
+    con.close()
+
+    return templates.TemplateResponse("pipelines.html", {
+        "request": request,
+        "pipelines": pipelines,
+        "selected_pipeline": dict(selected_pipeline) if selected_pipeline else None,
+    })
+
+
+@app.post("/pipelines/create")
+def pipeline_create() -> RedirectResponse:
+    con = connect()
+    con.execute(
+        "INSERT INTO pipelines(name, description, task_type, blocks_json, is_active, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+        ("New Pipeline", "", "default", "[]", 0, utcnow_iso(), utcnow_iso()),
+    )
+    new_id = con.execute("SELECT last_insert_rowid() AS x").fetchone()["x"]
+    con.commit()
+    con.close()
+    _log("pipeline_created", "pipeline", str(new_id), "new pipeline")
+    return RedirectResponse(url=f"/pipelines?selected={new_id}", status_code=303)
+
+
+@app.post("/pipelines/{pipeline_id}/update")
+def pipeline_update(
+    pipeline_id: int,
+    name: str = Form(...),
+    task_type: str = Form(""),
+    description: str = Form(""),
+    blocks_json: str = Form(""),
+    blocks_json_raw: str = Form(""),
+    is_active: Optional[str] = Form(None),
+) -> RedirectResponse:
+    active = 1 if is_active else 0
+    # Prefer blocks_json (from visual editor hidden field), fall back to blocks_json_raw (JSON textarea)
+    bj = blocks_json.strip() or blocks_json_raw.strip() or "[]"
+    # Validate JSON
+    try:
+        json.loads(bj)
+    except Exception:
+        bj = "[]"
+
+    con = connect()
+    con.execute(
+        "UPDATE pipelines SET name=?, description=?, task_type=?, blocks_json=?, is_active=?, updated_at=? WHERE id=?",
+        (name, description, task_type.strip() or "default", bj, active, utcnow_iso(), pipeline_id),
+    )
+    con.commit()
+    con.close()
+    _log("pipeline_updated", "pipeline", str(pipeline_id), name)
+    return RedirectResponse(url=f"/pipelines?selected={pipeline_id}", status_code=303)
+
+
+@app.get("/pipelines/{pipeline_id}/delete")
+def pipeline_delete(pipeline_id: int) -> RedirectResponse:
+    con = connect()
+    con.execute("DELETE FROM pipelines WHERE id=?", (pipeline_id,))
+    con.commit()
+    con.close()
+    _log("pipeline_deleted", "pipeline", str(pipeline_id), "")
+    return RedirectResponse(url="/pipelines", status_code=303)
+
+
+# ── Claude Health API ──
+
+@app.post("/api/claude-health/reset")
+def claude_health_reset() -> RedirectResponse:
+    claude_health.manual_reset()
+    _log("claude_health_reset", "system", None, "manual reset from dashboard")
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@app.get("/api/claude-health")
+def claude_health_status() -> JSONResponse:
+    return JSONResponse(claude_health.get_full_status())
+
+
+# ── Critiques ──
 
 @app.get("/critiques", response_class=HTMLResponse)
 def critiques(request: Request) -> HTMLResponse:
@@ -741,14 +940,14 @@ def create_critique(title: str = Form(...), body: str = Form(""), severity: str 
     return RedirectResponse(url="/critiques", status_code=303)
 
 
+# ── Logs ──
+
 @app.get("/logs", response_class=HTMLResponse)
 def logs(request: Request) -> HTMLResponse:
     con = connect()
     logs_ = con.execute("SELECT * FROM action_logs ORDER BY ts DESC LIMIT 300").fetchall()
-    # Build agent lookup: task_id -> agent info
     agents_raw = con.execute("SELECT id, name, role FROM agents").fetchall()
     agents_by_id = {str(dict(a)["id"]): dict(a) for a in agents_raw}
-    # Build task -> agent mapping
     task_agents = {}
     for row in con.execute("SELECT id, assigned_agent_id FROM tasks WHERE assigned_agent_id IS NOT NULL").fetchall():
         r = dict(row)
@@ -759,6 +958,8 @@ def logs(request: Request) -> HTMLResponse:
     _role_map = {"programmer": "Ada", "programming": "Ada", "architect": "Jorven", "architecture": "Jorven", "reviewer": "Iris", "reviewing": "Iris", "reporter": "Quimby", "reporting": "Quimby"}
     return templates.TemplateResponse("logs.html", {"request": request, "logs": logs_, "now": utcnow_iso(), "task_agents": task_agents, "agents_by_id": agents_by_id, "role_map": _role_map})
 
+
+# ── Decision pages ──
 
 def _decision_result_page(request: Request, decision: dict, *, title: str, note: str = "") -> HTMLResponse:
     rendered = markdown2.markdown(decision.get("result_markdown", ""))
@@ -845,6 +1046,8 @@ async def status(decision_id: str, token: str) -> JSONResponse:
     )
 
 
+# ── Scheduler logic ──
+
 def _compute_next_run(schedule_type: str, cron_expr: str | None, interval_minutes: int | None, base_dt: datetime) -> str | None:
     schedule_type = (schedule_type or 'none').strip()
     if schedule_type == 'interval' and interval_minutes and int(interval_minutes) > 0:
@@ -859,7 +1062,6 @@ def _compute_next_run(schedule_type: str, cron_expr: str | None, interval_minute
 
 
 def _tick_scheduled_tasks() -> None:
-    # Requests approvals near next_run_at; dispatches approved tasks when due.
     now = datetime.now(timezone.utc).replace(microsecond=0)
 
     con = connect()
@@ -888,7 +1090,7 @@ def _tick_scheduled_tasks() -> None:
         if not d:
             _request_approval_for_task(int(r['id']))
 
-    # 2) dispatch approved tasks
+    # 2) dispatch approved tasks via pipeline executor
     con = connect()
     due = con.execute(
         """
@@ -911,57 +1113,34 @@ def _tick_scheduled_tasks() -> None:
             if nxt > now:
                 continue
 
-        if not OPENCLAW_ENABLED:
-            con.execute("UPDATE tasks SET last_error=?, updated_at=? WHERE id=?", ('openclaw_disabled', utcnow_iso(), t['id']))
-            con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail) VALUES(?,?,?,?,?)', (utcnow_iso(), 'openclaw_disabled', 'task', str(t['id']), 'OPENCLAW_ENABLED=0'))
-            con.commit()
-            continue
-
         if not t.get('assigned_agent_id'):
             con.execute("UPDATE tasks SET last_error=?, updated_at=? WHERE id=?", ('no_assigned_agent', utcnow_iso(), t['id']))
-            con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail) VALUES(?,?,?,?,?)', (utcnow_iso(), 'openclaw_dispatch_skipped', 'task', str(t['id']), 'no assigned_agent_id'))
             con.commit()
+            _log('dispatch_skipped', 'task', str(t['id']), 'no assigned_agent_id')
             continue
 
-        agent_row = con.execute('SELECT * FROM agents WHERE id=?', (t['assigned_agent_id'],)).fetchone()
-        agent = {
-            'id': int(agent_row['id']) if agent_row else None,
-            'name': agent_row['name'] if agent_row else None,
-            'role': agent_row['role'] if agent_row else None,
-            'model': agent_row['model'] if agent_row else None,
-        }
-        meta = {
-            'zeroclaw_task_id': int(t['id']),
-            'schedule_type': t.get('schedule_type') or 'none',
-            'cron_expr': t.get('cron_expr'),
-            'interval_minutes': t.get('interval_minutes'),
-            'next_run_at': t.get('next_run_at'),
-        }
+        # Use pipeline executor (runs in background thread)
+        task_id = t['id']
+        _log("pipeline_dispatch", "task", str(task_id), f"dispatching via pipeline executor")
 
-        res = dispatch_job(title=t['title'], description=t['description'], agent=agent, metadata=meta)
-        if not res.get('ok'):
-            con.execute("UPDATE tasks SET last_error=?, updated_at=? WHERE id=?", (res.get('error') or 'dispatch_failed', utcnow_iso(), t['id']))
-            con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail) VALUES(?,?,?,?,?)', (utcnow_iso(), 'openclaw_dispatch_failed', 'task', str(t['id']), res.get('error') or ''))
-            con.commit()
-            continue
+        def _run_pipeline_thread(tid):
+            try:
+                run_pipeline(tid)
+            except Exception as e:
+                _log("pipeline_error", "task", str(tid), str(e))
 
-        job_id = res['job_id']
-        con.execute(
-            """
-            UPDATE tasks
-            SET status='active', openclaw_job_id=?, openclaw_job_status='queued', openclaw_last_status_payload=?,
-                last_run_at=?, last_error=NULL, updated_at=?
-            WHERE id=?
-            """
-            , (job_id, json.dumps(res.get('raw') or {}), utcnow_iso(), utcnow_iso(), t['id'])
-        )
-        con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'openclaw_dispatched', 'task', str(t['id']), f'job_id={job_id}', 'zeroclaw', str(agent['model'] or '') or None))
+        thread = threading.Thread(target=_run_pipeline_thread, args=(task_id,), daemon=True)
+        thread.start()
+
+        # Mark task as active so it's not re-dispatched
+        con.execute("UPDATE tasks SET status='active', updated_at=? WHERE id=?", (utcnow_iso(), task_id))
         con.commit()
 
     con.close()
 
 
 def _poll_openclaw_jobs() -> None:
+    """Poll OpenClaw jobs that were dispatched via the legacy path."""
     now = datetime.now(timezone.utc).replace(microsecond=0)
     con = connect()
     rows = con.execute(
@@ -1014,29 +1193,22 @@ def _poll_openclaw_jobs() -> None:
                 con.execute("UPDATE tasks SET status='pending', next_run_at=?, openclaw_job_status=NULL, updated_at=? WHERE id=?", (nxt, utcnow_iso(), t['id']))
                 con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail) VALUES(?,?,?,?,?)', (utcnow_iso(), 'task_rescheduled', 'task', str(t['id']), f'next_run_at={nxt}'))
             else:
-                # one-shot: mark done
                 if is_review_task:
                     if state == 'failed':
-                        # Failed review: put back to approved for retry, store feedback on source
                         review_output = last_result or (t.get('last_result') or '')
                         con.execute("UPDATE tasks SET status='approved', last_error='review_job_failed', updated_at=? WHERE id=?", (utcnow_iso(), t['id']))
-                        con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'review_task_retry', 'task', str(t['id']), 'review_job_failed_retrying', 'zeroclaw', None))
-                        # Store partial review feedback on source task
                         if review_output:
                             desc = str(t.get('description') or '')
-                            import re as _re2
-                            m2 = _re2.search(r'\[review_of_task_id:(\d+)\]', desc)
+                            m2 = re.search(r'\[review_of_task_id:(\d+)\]', desc)
                             if m2:
                                 src_id2 = int(m2.group(1))
                                 con.execute("UPDATE tasks SET review_summary=?, updated_at=? WHERE id=?", (review_output, utcnow_iso(), src_id2))
                     else:
-                        # Review completed successfully: attach summary to source task
                         review_output = last_result or (t.get('last_result') or '')
                         desc = str(t.get('description') or '')
-                        import re as _re
-                        m = _re.search(r'\[review_of_task_id:(\d+)\]', desc)
+                        m = re.search(r'\[review_of_task_id:(\d+)\]', desc)
                         src_attached = False
-                        review_pass = True  # assume pass
+                        review_pass = True
                         if review_output:
                             low = review_output.lower()
                             if '"verdict"' in low and '"fail"' in low:
@@ -1048,54 +1220,37 @@ def _poll_openclaw_jobs() -> None:
                             src = con.execute('SELECT id, status FROM tasks WHERE id=?', (src_id,)).fetchone()
                             if src:
                                 src_dict = dict(src)
-                                # Always attach review summary to source task
                                 con.execute("UPDATE tasks SET review_summary=?, updated_at=? WHERE id=?", (review_output, utcnow_iso(), src_id))
                                 if review_pass and src_dict['status'] in ('dev_done', 'review'):
                                     con.execute("UPDATE tasks SET status='done', updated_at=? WHERE id=?", (utcnow_iso(), src_id))
-                                    con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'source_task_done_via_review', 'task', str(src_id), f'review_task_id={t["id"]} verdict=PASS', 'zeroclaw', None))
                                 elif not review_pass and src_dict['status'] in ('dev_done', 'review'):
                                     con.execute("UPDATE tasks SET status='approved', retry_count=0, openclaw_job_id=NULL, openclaw_job_status=NULL, updated_at=? WHERE id=?", (utcnow_iso(), src_id))
-                                    con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'source_task_failed_review', 'task', str(src_id), f'review_task_id={t["id"]} verdict=FAIL', 'zeroclaw', None))
                                 src_attached = True
-                        # Mark review task as done
                         con.execute("UPDATE tasks SET status='done', updated_at=? WHERE id=?", (utcnow_iso(), t['id']))
                         if review_pass and src_attached:
-                            # PASS: delete the review task (summary on source)
                             con.execute("DELETE FROM decisions WHERE entity_type='task' AND entity_id=?", (t['id'],))
                             con.execute('DELETE FROM critiques WHERE task_id=?', (t['id'],))
                             con.execute('DELETE FROM tasks WHERE id=?', (t['id'],))
-                            con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'review_task_deleted_pass', 'task', str(t['id']), f'summary_attached={src_attached}', 'zeroclaw', None))
-                        else:
-                            # FAIL: keep review task as done (for reference)
-                            con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'review_task_kept_fail', 'task', str(t['id']), f'summary_attached={src_attached} verdict=FAIL', 'zeroclaw', None))
                 elif is_resolve_task:
-                    # Resolve task completed: apply resolution to source task then delete
                     resolve_output = last_result or (t.get('last_result') or '')
                     desc = str(t.get('description') or '')
-                    import re as _re3
-                    m3 = _re3.search(r'\[resolve_blocked_task_id:(\d+)\]', desc)
+                    m3 = re.search(r'\[resolve_blocked_task_id:(\d+)\]', desc)
                     if state == 'failed':
-                        # Failed resolve: just delete the resolve task, don't block it
                         con.execute("DELETE FROM decisions WHERE entity_type='task' AND entity_id=?", (t['id'],))
                         con.execute('DELETE FROM critiques WHERE task_id=?', (t['id'],))
                         con.execute('DELETE FROM tasks WHERE id=?', (t['id'],))
-                        con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'resolve_task_deleted_failed', 'task', str(t['id']), 'resolve_job_failed_deleted', 'zeroclaw', None))
                     else:
-                        # Completed resolve: apply resolution to source, unblock it, delete resolve task
                         if m3:
                             src_id3 = int(m3.group(1))
                             src3 = con.execute('SELECT id, status FROM tasks WHERE id=?', (src_id3,)).fetchone()
                             if src3 and dict(src3)['status'] == 'blocked':
                                 con.execute("UPDATE tasks SET status='approved', retry_count=0, last_error=NULL, last_result=?, openclaw_job_id=NULL, openclaw_job_status=NULL, updated_at=? WHERE id=?", (resolve_output, utcnow_iso(), src_id3))
-                                con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'source_task_unblocked', 'task', str(src_id3), f'resolve_task_id={t["id"]}', 'zeroclaw', None))
                         con.execute("DELETE FROM decisions WHERE entity_type='task' AND entity_id=?", (t['id'],))
                         con.execute('DELETE FROM critiques WHERE task_id=?', (t['id'],))
                         con.execute('DELETE FROM tasks WHERE id=?', (t['id'],))
-                        con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'resolve_task_deleted_success', 'task', str(t['id']), 'resolution_applied', 'zeroclaw', None))
                 else:
                     if state == 'failed':
                         con.execute("UPDATE tasks SET status='blocked', last_error='openclaw_job_failed', updated_at=? WHERE id=?", (utcnow_iso(), t['id']))
-                        con.execute('INSERT INTO action_logs(ts, action, entity_type, entity_id, detail, layer, model) VALUES(?,?,?,?,?,?,?)', (utcnow_iso(), 'task_blocked', 'task', str(t['id']), 'openclaw_job_failed', 'zeroclaw', None))
                     else:
                         con.execute("UPDATE tasks SET status='dev_done', updated_at=? WHERE id=?", (utcnow_iso(), t['id']))
 

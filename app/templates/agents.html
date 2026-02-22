@@ -5,6 +5,7 @@
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">← Dashboard</a>
             <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/pipelines">Pipelines</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
@@ -37,7 +38,7 @@
             <a href="/agents/{{ a['id'] }}" class="block rounded border border-slate-700 bg-slate-950/20 px-3 py-2 hover:bg-slate-800">
               <div class="flex items-center justify-between">
                 <div class="font-semibold">{{ name }}</div>
-                {% set running_jobs = (running_by_agent.get(a['id'], 0) if running_by_agent is defined else 0) %}
+                {% set running_jobs = (running_by_agent.get(a['id']|string, 0) if running_by_agent is defined else 0) %}
               {% if running_jobs > 0 %}
                   <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200">RUNNING</span>
                 {% else %}
@@ -45,6 +46,9 @@
                 {% endif %}
               </div>
               <div class="text-xs text-slate-400">{{ a['role'] }}</div>
+              {% if a.get('files') %}
+              <div class="text-xs text-slate-500 mt-0.5">{{ a['files']|join(', ') }}</div>
+              {% endif %}
               <div class="text-xs text-slate-300 zc-debug hidden">role={{a['role']}} • model={{ a['model']|default('', true) }}</div>
             </a>
           {% endfor %}

@@ -7,19 +7,47 @@
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
     </button>
 
+{% if claude_health_state == 'DAILY_LIMIT_HIT' %}
+<div class="bg-amber-900/60 border border-amber-700 rounded-lg px-4 py-3 mb-3 text-amber-200 text-sm">
+  Claude CLI daily limit reached. {{ paused_count + queued_count }} tasks paused/queued. Resets at midnight.
+</div>
+{% endif %}
+{% if claude_health_state == 'AUTH_FAILED' %}
+<div class="bg-rose-900/60 border border-rose-700 rounded-lg px-4 py-3 mb-3 text-rose-200 text-sm flex items-center justify-between">
+  <span>Claude CLI authentication expired. Run <code class="bg-rose-800 px-1 rounded">claude login</code> on the host machine, then click Reset.</span>
+  <form method="post" action="/api/claude-health/reset" class="inline">
+    <button class="px-3 py-1 rounded bg-rose-700 hover:bg-rose-600 text-sm font-semibold">Reset Health</button>
+  </form>
+</div>
+{% endif %}
 
 <div class="bg-slate-900 rounded-xl p-4 border border-slate-800 mt-4">
   <div class="flex flex-col gap-3 border-b border-slate-800 pb-3">
-    <div>
-      <div class="text-xl font-bold">Anvil</div>
-      <div class="text-xs text-slate-400">Zero Claw - Secure Task Manager Layer</div>
-      <div class="text-xs text-slate-400 zc-debug hidden">Workflow: pending → approved/rejected → active → dev_done → review → done • {{ now }}</div>
+    <div class="flex items-center gap-3">
+      <div>
+        <div class="text-xl font-bold">Anvil</div>
+        <div class="text-xs text-slate-400">Zero Claw - Secure Task Manager Layer</div>
+        <div class="text-xs text-slate-400 zc-debug hidden">Workflow: pending → approved/rejected → active → dev_done → review → done • {{ now }}</div>
+      </div>
+      <!-- Claude CLI health dot -->
+      {% if claude_health_state == 'HEALTHY' %}
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500" title="Claude CLI: Healthy"></span>
+      {% elif claude_health_state == 'DEGRADED' %}
+        <span class="w-2.5 h-2.5 rounded-full bg-yellow-500" title="Claude CLI: Degraded — experiencing intermittent rate limits"></span>
+      {% elif claude_health_state == 'DAILY_LIMIT_HIT' %}
+        <span class="w-2.5 h-2.5 rounded-full bg-amber-500" title="Claude CLI: Daily limit reached"></span>
+      {% elif claude_health_state == 'AUTH_FAILED' %}
+        <span class="w-2.5 h-2.5 rounded-full bg-rose-500" title="Claude CLI: Auth expired"></span>
+      {% elif claude_health_state == 'UNAVAILABLE' %}
+        <span class="w-2.5 h-2.5 rounded-full bg-rose-500" title="Claude CLI unavailable. Auto-retry soon."></span>
+      {% endif %}
     </div>
 
     <!-- all primary navigation lives here (centered) -->
     <div class="flex flex-wrap items-center justify-center gap-2">
       <a class="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold" href="/tasks/new">+ New task</a>
       <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/agents">Agents</a>
+      <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/pipelines">Pipelines</a>
       <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/routines">Routines</a>
       <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/critiques">Critiques</a>
       <a class="px-3 py-2 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700" href="/logs">Logs</a>
@@ -34,6 +62,12 @@
     <div class="rounded bg-slate-800 border border-slate-700 px-2 py-1">Dev Done: <b>{{ tasks_by_status['dev_done']|length }}</b></div>
     <div class="rounded bg-slate-800 border border-slate-700 px-2 py-1">Review: <b>{{ tasks_by_status['review']|length }}</b></div>
     <div class="rounded bg-slate-800 border border-slate-700 px-2 py-1">Blocked: <b>{{ tasks_by_status['blocked']|length }}</b></div>
+    {% if tasks_by_status.get('paused_limit', [])|length > 0 %}
+    <div class="rounded bg-amber-800/40 border border-amber-700 px-2 py-1 text-amber-200">Paused: <b>{{ tasks_by_status['paused_limit']|length }}</b></div>
+    {% endif %}
+    {% if tasks_by_status.get('queued_for_claude', [])|length > 0 %}
+    <div class="rounded bg-amber-800/40 border border-amber-700 px-2 py-1 text-amber-200">Queued: <b>{{ tasks_by_status['queued_for_claude']|length }}</b></div>
+    {% endif %}
     <div class="rounded bg-slate-800 border border-slate-700 px-2 py-1">Done: <b>{{ tasks_by_status['done']|length }}</b></div>
   </div>
 
@@ -41,21 +75,27 @@
     {% for col in cols %}
       {% set label = col|capitalize %}
       {% if col == 'dev_done' %}{% set label = 'Dev Done' %}{% endif %}
-      <div class="rounded-lg border border-slate-800 bg-slate-950/30 min-h-[62vh] min-w-0"
+      {% if col == 'paused_limit' %}{% set label = 'Paused' %}{% endif %}
+      {% if col == 'queued_for_claude' %}{% set label = 'Queued' %}{% endif %}
+      <div class="rounded-lg border {% if col in ('paused_limit', 'queued_for_claude') %}border-amber-800 bg-amber-950/20{% else %}border-slate-800 bg-slate-950/30{% endif %} min-h-[62vh] min-w-0"
           data-col="{{ col }}"
           ondragover="event.preventDefault();"
           ondrop="dropCard(event);">
-        <div class="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
-          <div class="font-semibold">{{ label }}</div>
-          <div class="text-xs text-slate-400">{{ tasks_by_status[col]|length }}</div>
+        <div class="px-3 py-2 border-b {% if col in ('paused_limit', 'queued_for_claude') %}border-amber-800{% else %}border-slate-800{% endif %} flex items-center justify-between">
+          <div class="font-semibold {% if col in ('paused_limit', 'queued_for_claude') %}text-amber-200{% endif %}">{{ label }}</div>
+          <div class="text-xs text-slate-400">{{ tasks_by_status.get(col, [])|length }}</div>
         </div>
         <div class="p-3 space-y-2">
-          {% for t in tasks_by_status[col] %}
-            <div class="rounded border border-slate-700 bg-slate-900 p-3 text-[13px] cursor-move overflow-hidden"
+          {% for t in tasks_by_status.get(col, []) %}
+            <div class="rounded border {% if col == 'paused_limit' %}border-amber-700 bg-amber-900/30{% elif col == 'queued_for_claude' %}border-amber-700 bg-amber-900/30{% else %}border-slate-700 bg-slate-900{% endif %} p-3 text-[13px] cursor-move overflow-hidden"
               draggable="true" ondragstart="dragCard(event);" data-task-id="{{ t['id'] }}">
               <div class="flex items-center justify-between gap-2">
                 <a class="font-semibold hover:underline leading-snug break-words" href="/tasks/{{ t['id'] }}">{{ t['title'] }}</a>
-                {% if t['status']=='pending' %}
+                {% if col == 'paused_limit' %}
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-200">&#9208; Waiting for Claude CLI</span>
+                {% elif col == 'queued_for_claude' %}
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-200">&#128203; Queued for Claude</span>
+                {% elif t['status']=='pending' %}
                   <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-200">needs approval</span>
                 {% endif %}
               </div>
@@ -114,7 +154,7 @@
 
     async function resendApproval(taskId){
       try {
-        const res = await fetch(`/tasks/${taskId}/complete`, {method: 'POST'});
+        const res = await fetch('/tasks/' + taskId + '/complete', {method: 'POST'});
         if(!res.ok){
           alert(await res.text());
           return;
@@ -124,7 +164,7 @@
         alert(String(e));
       }
     }
-  
+
     // Auto-refresh every 15 seconds (pause during drag)
     let _dragging = false;
     const _origDragCard = dragCard;

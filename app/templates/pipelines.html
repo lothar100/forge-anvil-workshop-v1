@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+{% block page_header %}
+      <div class="max-w-6xl mx-auto">
+        <div class="flex flex-wrap items-center justify-end gap-2 mb-2 pr-1">
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">&#8592; Dashboard</a>
+            <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/pipelines">Pipelines</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
+            <button id="zcDebugToggle" type="button" title="Toggle debug" aria-label="Toggle debug" class="px-2.5 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 opacity-60 text-sm"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
+        </div>
+      </div>
+{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto">
+  <div class="bg-slate-900 rounded-xl p-4 border border-slate-800">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <div class="text-xl font-bold">Pipeline Editor</div>
+        <div class="text-xs text-slate-400">Visual block-based execution pipelines</div>
+      </div>
+      <button onclick="createNewPipeline()" class="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm">+ New Pipeline</button>
+    </div>
+
+    <!-- Pipeline list -->
+    <div class="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="space-y-2" id="pipelineList">
+        {% for p in pipelines %}
+          <div class="rounded border border-slate-700 bg-slate-950/20 px-3 py-2 cursor-pointer hover:bg-slate-800 {% if selected_pipeline and selected_pipeline['id'] == p['id'] %}ring-1 ring-indigo-500{% endif %}"
+               onclick="selectPipeline({{ p['id'] }})">
+            <div class="flex items-center justify-between">
+              <div class="font-semibold text-sm">{{ p['name'] }}</div>
+              {% if p['is_active'] %}
+                <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200">Active</span>
+              {% else %}
+                <span class="text-xs px-2 py-0.5 rounded bg-slate-500/20 border border-slate-500/40 text-slate-400">Inactive</span>
+              {% endif %}
+            </div>
+            <div class="text-xs text-slate-400">{{ p['task_type'] or 'default' }} — {{ (p['blocks_json']|default('[]',true)|from_json|length) if p['blocks_json'] else 0 }} blocks</div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <!-- Editor area -->
+      <div class="lg:col-span-2" id="editorArea">
+        {% if selected_pipeline %}
+          <div class="rounded border border-slate-700 bg-slate-950/30 p-4">
+            <!-- Pipeline meta -->
+            <form method="post" action="/pipelines/{{ selected_pipeline['id'] }}/update" id="pipelineForm">
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                <div>
+                  <label class="text-sm text-slate-300">Name</label>
+                  <input name="name" value="{{ selected_pipeline['name'] }}" required class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700 text-sm" />
+                </div>
+                <div>
+                  <label class="text-sm text-slate-300">Task Type</label>
+                  <input name="task_type" value="{{ selected_pipeline['task_type'] or '' }}" placeholder="default" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700 text-sm" />
+                </div>
+                <div>
+                  <label class="text-sm text-slate-300">Description</label>
+                  <input name="description" value="{{ selected_pipeline['description'] or '' }}" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700 text-sm" />
+                </div>
+              </div>
+
+              <!-- View toggle -->
+              <div class="flex items-center gap-2 mb-3">
+                <button type="button" onclick="toggleView('visual')" id="btnVisual" class="px-3 py-1 rounded text-sm bg-indigo-600 text-white">Visual</button>
+                <button type="button" onclick="toggleView('json')" id="btnJson" class="px-3 py-1 rounded text-sm bg-slate-700 text-slate-300">JSON</button>
+                <div class="flex-1"></div>
+                <label class="flex items-center gap-2 text-sm">
+                  <input type="checkbox" name="is_active" {% if selected_pipeline['is_active'] %}checked{% endif %} />
+                  Active
+                </label>
+              </div>
+
+              <!-- Visual editor -->
+              <div id="visualEditor">
+                <div id="blockContainer" class="space-y-1">
+                  <!-- Blocks rendered by JS -->
+                </div>
+                <div class="mt-3 flex gap-2">
+                  <select id="newBlockType" class="px-3 py-2 rounded bg-slate-800 border border-slate-700 text-sm">
+                    <option value="executor">Executor</option>
+                    <option value="review">Review</option>
+                    <option value="retry">Retry</option>
+                    <option value="escalate">Escalate</option>
+                    <option value="route">Route</option>
+                    <option value="done">Done</option>
+                  </select>
+                  <button type="button" onclick="addBlock()" class="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 text-sm font-semibold">+ Add Block</button>
+                </div>
+              </div>
+
+              <!-- JSON editor -->
+              <div id="jsonEditor" class="hidden">
+                <textarea id="jsonTextarea" name="blocks_json_raw" rows="20" class="w-full px-3 py-2 rounded bg-slate-800 border border-slate-700 font-mono text-sm"></textarea>
+              </div>
+
+              <!-- Hidden field for blocks JSON from visual editor -->
+              <input type="hidden" name="blocks_json" id="blocksJsonHidden" />
+
+              <div class="flex gap-2 mt-4">
+                <button type="submit" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 font-semibold text-sm">Save Pipeline</button>
+                <a href="/pipelines/{{ selected_pipeline['id'] }}/delete" onclick="return confirm('Delete this pipeline?')" class="px-4 py-2 rounded bg-rose-700 hover:bg-rose-600 text-sm">Delete</a>
+              </div>
+            </form>
+          </div>
+        {% else %}
+          <div class="rounded border border-slate-700 bg-slate-950/30 p-8 text-center text-slate-400">
+            Select a pipeline to edit, or create a new one.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const BLOCK_COLORS = {
+  route: 'border-green-600 bg-green-950/30',
+  executor: 'border-amber-600 bg-amber-950/30',
+  review: 'border-purple-600 bg-purple-950/30',
+  retry: 'border-blue-600 bg-blue-950/30',
+  escalate: 'border-red-600 bg-red-950/30',
+  done: 'border-slate-600 bg-slate-800/50',
+};
+
+const BLOCK_ICONS = {
+  route: '&#9654;',
+  executor: '&#9881;',
+  review: '&#128269;',
+  retry: '&#8635;',
+  escalate: '&#9889;',
+  done: '&#10004;',
+};
+
+let blocks = {{ selected_pipeline['blocks_json']|default('[]', true)|safe if selected_pipeline else '[]' }};
+let currentView = 'visual';
+
+function renderBlocks() {
+  const container = document.getElementById('blockContainer');
+  if (!container) return;
+  container.innerHTML = '';
+
+  blocks.forEach((block, idx) => {
+    const type = block.type || 'unknown';
+    const config = block.config || {};
+    const colors = BLOCK_COLORS[type] || 'border-slate-600 bg-slate-900';
+    const icon = BLOCK_ICONS[type] || '?';
+
+    // Arrow between blocks
+    if (idx > 0) {
+      const arrow = document.createElement('div');
+      arrow.className = 'flex justify-center text-slate-500 text-lg';
+      arrow.innerHTML = '&#8595;';
+      container.appendChild(arrow);
+    }
+
+    const card = document.createElement('div');
+    card.className = 'rounded border-l-4 ' + colors + ' p-3 relative';
+    card.draggable = true;
+    card.dataset.index = idx;
+
+    // Drag handlers
+    card.ondragstart = (e) => { e.dataTransfer.setData('text/plain', idx); card.style.opacity = '0.5'; };
+    card.ondragend = () => { card.style.opacity = '1'; };
+    card.ondragover = (e) => { e.preventDefault(); card.style.outline = '2px solid #6366f1'; };
+    card.ondragleave = () => { card.style.outline = ''; };
+    card.ondrop = (e) => {
+      e.preventDefault();
+      card.style.outline = '';
+      const fromIdx = parseInt(e.dataTransfer.getData('text/plain'));
+      const toIdx = idx;
+      if (fromIdx !== toIdx) {
+        const moved = blocks.splice(fromIdx, 1)[0];
+        blocks.splice(toIdx, 0, moved);
+        renderBlocks();
+      }
+    };
+
+    let badges = '';
+    if (type === 'review' && config.pass_action === 'skip_to_done') {
+      badges += '<span class="text-xs px-1.5 py-0.5 rounded bg-emerald-800 text-emerald-300 ml-2">PASS &#8594; skip to done</span>';
+    }
+    if (type === 'review') {
+      badges += '<span class="text-xs px-1.5 py-0.5 rounded bg-rose-800 text-rose-300 ml-1">FAIL &#9660;</span>';
+    }
+    if (config.executor === 'Claude CLI' && config.on_limit) {
+      const limitLabels = { fallback: '&#9193; fallback', stop: '&#9208; stop on limit', queue: '&#128203; queue on limit' };
+      badges += '<span class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 ml-1">' + (limitLabels[config.on_limit] || config.on_limit) + '</span>';
+    }
+
+    card.innerHTML = `
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-lg">${icon}</span>
+          <span class="font-semibold text-sm">${config.label || type}</span>
+          ${badges}
+        </div>
+        <div class="flex items-center gap-1">
+          <button type="button" onclick="editBlock(${idx})" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs">Edit</button>
+          <button type="button" onclick="removeBlock(${idx})" class="px-2 py-1 rounded bg-rose-800 hover:bg-rose-700 text-xs">&#10005;</button>
+        </div>
+      </div>
+      <div class="text-xs text-slate-400 mt-1">${type.toUpperCase()} ${config.model ? '— ' + config.model : ''} ${config.executor ? '(' + config.executor + ')' : ''}</div>
+    `;
+
+    container.appendChild(card);
+  });
+
+  syncHiddenField();
+}
+
+function syncHiddenField() {
+  const h = document.getElementById('blocksJsonHidden');
+  if (h) h.value = JSON.stringify(blocks);
+  const j = document.getElementById('jsonTextarea');
+  if (j && currentView === 'json') j.value = JSON.stringify(blocks, null, 2);
+}
+
+function toggleView(view) {
+  currentView = view;
+  const visual = document.getElementById('visualEditor');
+  const json = document.getElementById('jsonEditor');
+  const btnV = document.getElementById('btnVisual');
+  const btnJ = document.getElementById('btnJson');
+
+  if (view === 'json') {
+    visual.classList.add('hidden');
+    json.classList.remove('hidden');
+    btnJ.className = 'px-3 py-1 rounded text-sm bg-indigo-600 text-white';
+    btnV.className = 'px-3 py-1 rounded text-sm bg-slate-700 text-slate-300';
+    document.getElementById('jsonTextarea').value = JSON.stringify(blocks, null, 2);
+  } else {
+    visual.classList.remove('hidden');
+    json.classList.add('hidden');
+    btnV.className = 'px-3 py-1 rounded text-sm bg-indigo-600 text-white';
+    btnJ.className = 'px-3 py-1 rounded text-sm bg-slate-700 text-slate-300';
+    // Parse JSON back
+    try {
+      blocks = JSON.parse(document.getElementById('jsonTextarea').value);
+    } catch(e) {}
+    renderBlocks();
+  }
+}
+
+function addBlock() {
+  const type = document.getElementById('newBlockType').value;
+  const defaults = {
+    route: { label: 'New Route', condition: '' },
+    executor: { model: 'openai/gpt-4o-mini', executor: 'OpenRouter', label: 'New Executor' },
+    review: { model: 'anthropic/claude-opus-4.6', executor: 'OpenRouter', label: 'Review', pass_action: 'skip_to_done' },
+    retry: { model: 'openai/gpt-4o-mini', executor: 'OpenRouter', label: 'Retry', max_retries: 1, include_review_notes: true },
+    escalate: { model: 'claude-cli', executor: 'Claude CLI', label: 'Escalate', on_limit: 'stop' },
+    done: { label: 'Task Complete' },
+  };
+  blocks.push({ type: type, config: defaults[type] || { label: 'New Block' } });
+  renderBlocks();
+}
+
+function removeBlock(idx) {
+  blocks.splice(idx, 1);
+  renderBlocks();
+}
+
+function editBlock(idx) {
+  const block = blocks[idx];
+  const config = block.config || {};
+  let fields = '';
+
+  fields += '<div class="mb-2"><label class="text-xs text-slate-400">Label</label><input id="ed_label" value="' + (config.label || '') + '" class="w-full px-2 py-1 rounded bg-slate-800 border border-slate-700 text-sm" /></div>';
+
+  if (['executor', 'review', 'retry', 'escalate'].includes(block.type)) {
+    fields += '<div class="mb-2"><label class="text-xs text-slate-400">Model</label><input id="ed_model" value="' + (config.model || '') + '" class="w-full px-2 py-1 rounded bg-slate-800 border border-slate-700 text-sm" /></div>';
+    fields += '<div class="mb-2"><label class="text-xs text-slate-400">Executor</label><select id="ed_executor" class="w-full px-2 py-1 rounded bg-slate-800 border border-slate-700 text-sm"><option value="OpenRouter"' + (config.executor !== 'Claude CLI' ? ' selected' : '') + '>OpenRouter</option><option value="Claude CLI"' + (config.executor === 'Claude CLI' ? ' selected' : '') + '>Claude CLI</option></select></div>';
+  }
+
+  if (block.type === 'review') {
+    fields += '<div class="mb-2"><label class="text-xs text-slate-400">Pass Action</label><select id="ed_pass_action" class="w-full px-2 py-1 rounded bg-slate-800 border border-slate-700 text-sm"><option value="skip_to_done"' + (config.pass_action === 'skip_to_done' ? ' selected' : '') + '>Skip to Done</option><option value="continue"' + (config.pass_action === 'continue' ? ' selected' : '') + '>Continue</option></select></div>';
+  }
+
+  if (block.type === 'retry') {
+    fields += '<div class="mb-2"><label class="text-xs text-slate-400">Max Retries</label><input id="ed_max_retries" type="number" value="' + (config.max_retries || 1) + '" class="w-full px-2 py-1 rounded bg-slate-800 border border-slate-700 text-sm" /></div>';
+    fields += '<div class="mb-2"><label class="flex items-center gap-2 text-xs text-slate-400"><input id="ed_include_notes" type="checkbox" ' + (config.include_review_notes ? 'checked' : '') + ' /> Include review notes</label></div>';
+  }
+
+  if (block.type === 'route') {
+    fields += '<div class="mb-2"><label class="text-xs text-slate-400">Condition</label><input id="ed_condition" value="' + (config.condition || '') + '" class="w-full px-2 py-1 rounded bg-slate-800 border border-slate-700 text-sm" /></div>';
+  }
+
+  // on_limit (shown dynamically via JS after executor dropdown change)
+  if (['executor', 'retry', 'escalate'].includes(block.type)) {
+    const isCliSelected = config.executor === 'Claude CLI';
+    fields += '<div id="ed_on_limit_wrap" class="mb-2' + (isCliSelected ? '' : ' hidden') + '"><label class="text-xs text-slate-400">On Limit (Claude CLI)</label><select id="ed_on_limit" class="w-full px-2 py-1 rounded bg-slate-800 border border-slate-700 text-sm"><option value="fallback"' + (config.on_limit === 'fallback' || !config.on_limit ? ' selected' : '') + '>Fall back to next block</option><option value="stop"' + (config.on_limit === 'stop' ? ' selected' : '') + '>Stop pipeline — wait for Claude</option><option value="queue"' + (config.on_limit === 'queue' ? ' selected' : '') + '>Queue task — resume when Claude is back</option></select></div>';
+  }
+
+  const modal = document.createElement('div');
+  modal.className = 'fixed inset-0 bg-black/60 flex items-center justify-center z-50';
+  modal.id = 'blockModal';
+  modal.innerHTML = `
+    <div class="bg-slate-900 rounded-xl p-4 border border-slate-700 w-full max-w-md">
+      <div class="font-bold mb-3">Edit Block: ${block.type.toUpperCase()}</div>
+      ${fields}
+      <div class="flex gap-2 mt-3">
+        <button type="button" onclick="saveBlockEdit(${idx})" class="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm font-semibold">Apply</button>
+        <button type="button" onclick="closeModal()" class="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">Cancel</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Show/hide on_limit based on executor selection
+  const exSel = document.getElementById('ed_executor');
+  if (exSel) {
+    exSel.onchange = () => {
+      const wrap = document.getElementById('ed_on_limit_wrap');
+      if (wrap) {
+        if (exSel.value === 'Claude CLI') wrap.classList.remove('hidden');
+        else wrap.classList.add('hidden');
+      }
+    };
+  }
+}
+
+function saveBlockEdit(idx) {
+  const block = blocks[idx];
+  const config = block.config || {};
+
+  const label = document.getElementById('ed_label');
+  if (label) config.label = label.value;
+
+  const model = document.getElementById('ed_model');
+  if (model) config.model = model.value;
+
+  const executor = document.getElementById('ed_executor');
+  if (executor) config.executor = executor.value;
+
+  const passAction = document.getElementById('ed_pass_action');
+  if (passAction) config.pass_action = passAction.value;
+
+  const maxRetries = document.getElementById('ed_max_retries');
+  if (maxRetries) config.max_retries = parseInt(maxRetries.value) || 1;
+
+  const includeNotes = document.getElementById('ed_include_notes');
+  if (includeNotes) config.include_review_notes = includeNotes.checked;
+
+  const condition = document.getElementById('ed_condition');
+  if (condition) config.condition = condition.value;
+
+  const onLimit = document.getElementById('ed_on_limit');
+  if (onLimit && config.executor === 'Claude CLI') config.on_limit = onLimit.value;
+  else delete config.on_limit;
+
+  block.config = config;
+  blocks[idx] = block;
+  closeModal();
+  renderBlocks();
+}
+
+function closeModal() {
+  const m = document.getElementById('blockModal');
+  if (m) m.remove();
+}
+
+function selectPipeline(id) {
+  window.location.href = '/pipelines?selected=' + id;
+}
+
+function createNewPipeline() {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/pipelines/create';
+  document.body.appendChild(form);
+  form.submit();
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+  renderBlocks();
+  // On form submit, sync JSON
+  const form = document.getElementById('pipelineForm');
+  if (form) {
+    form.onsubmit = () => {
+      if (currentView === 'json') {
+        try { blocks = JSON.parse(document.getElementById('jsonTextarea').value); } catch(e) { alert('Invalid JSON'); return false; }
+      }
+      document.getElementById('blocksJsonHidden').value = JSON.stringify(blocks);
+    };
+  }
+});
+</script>
+{% endblock %}
