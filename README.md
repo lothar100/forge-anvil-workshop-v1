@@ -1,7 +1,9 @@
 # Agent Zero / ZeroClaw / OpenClaw
 
 > **Agent Zero** — *Forge* — Intelligent Bootstrap Layer
+
 > **Zero Claw** — *Anvil* — Secure Task Manager Layer
+
 > **Open Claw** — *Workshop* — The Office Layer
 
 ---
