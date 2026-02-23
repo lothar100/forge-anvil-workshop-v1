@@ -7,3 +7,5 @@
 .vs/forge-anvil-workshop-v1/FileContentIndex/ed67870c-9081-4331-885f-32ba2e3c9249.vsidx
 .vs/forge-anvil-workshop-v1/v17/.wsuo
 .vs/forge-anvil-workshop-v1/v17/DocumentLayout.json
+app/__pycache__/*
+.claude/settings.local.json
