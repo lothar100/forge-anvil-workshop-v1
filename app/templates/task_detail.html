@@ -19,7 +19,7 @@
   <div class="flex items-start justify-between gap-4">
     <div>
       <div class="text-xl font-bold">Task #{{ task['id'] }} — {{ task['title'] }}</div>
-      <div class="text-sm text-slate-300 zc-debug hidden">Created {{ task['created_at'] }} • Updated {{ task['updated_at'] }}</div>
+      <div class="text-sm text-slate-300 zc-debug hidden">Created {{ task['created_at'] }} &bull; Updated {{ task['updated_at'] }}{% if latest_decision %} &bull; Decision: <code class="bg-slate-800 px-1 rounded">{{ latest_decision['decision_id'] }}</code> ({{ latest_decision['status'] }}){% endif %}</div>
     </div>
     <div class="text-sm">
       {% if task['status'] == 'paused_limit' %}

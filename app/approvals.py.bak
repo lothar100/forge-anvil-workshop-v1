@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import os
 import secrets
@@ -12,16 +14,23 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _secret() -> str:
-    """Return the static approval secret from env."""
-    return os.getenv("APPROVAL_SECRET") or "dev-secret-change-me"
+def _pepper() -> bytes:
+    # Prefer ZEROCLAW_TOKEN_PEPPER, fall back to APPROVAL_SECRET (from uploaded .env)
+    return (os.getenv("ZEROCLAW_TOKEN_PEPPER") or os.getenv("APPROVAL_SECRET") or "dev-pepper-change-me").encode("utf-8")
+
+
+def _hash_token(token: str, salt_b64: str) -> str:
+    salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
+    key = _pepper() + salt
+    return hmac.new(key, token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def create_decision(*, entity_type: str, entity_id: int, action: str, requester: str, ttl_hours: int, result_markdown: str) -> tuple[str, str]:
-    """Create a new pending decision. Returns (decision_id, token).
-    Token is simply the APPROVAL_SECRET - same for all decisions."""
     decision_id = secrets.token_urlsafe(16)
-    token = _secret()  # Static token = APPROVAL_SECRET
+    token = secrets.token_urlsafe(24)
+    salt = secrets.token_bytes(16)
+    salt_b64 = base64.urlsafe_b64encode(salt).decode("ascii")
+    token_hash = _hash_token(token, salt_b64)
 
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
 
@@ -31,7 +40,7 @@ def create_decision(*, entity_type: str, entity_id: int, action: str, requester:
         INSERT INTO decisions(decision_id, entity_type, entity_id, action, status, token_hash, token_salt, expires_at, requested_at, requester, result_markdown)
         VALUES(?,?,?,?, 'pending', ?,?,?, ?,?,?)
         """,
-        (decision_id, entity_type, entity_id, action, "static", "static", expires_at, utcnow_iso(), requester, result_markdown),
+        (decision_id, entity_type, entity_id, action, token_hash, salt_b64, expires_at, utcnow_iso(), requester, result_markdown),
     )
     con.execute(
         "INSERT INTO action_logs(ts, action, entity_type, entity_id, detail) VALUES(?,?,?,?,?)",
@@ -43,7 +52,6 @@ def create_decision(*, entity_type: str, entity_id: int, action: str, requester:
 
 
 def verify_decision_token(*, decision_id: str, token: str):
-    """Verify a decision token. Token must match APPROVAL_SECRET."""
     con = connect()
     row = con.execute("SELECT * FROM decisions WHERE decision_id=?", (decision_id,)).fetchone()
     con.close()
@@ -58,11 +66,8 @@ def verify_decision_token(*, decision_id: str, token: str):
         except Exception:
             return None
 
-    # Simple constant-time comparison against the static secret
-    if not hmac.compare_digest(token, _secret()):
-        return None
-    # Only allow pending decisions to be acted on
-    if row["status"] != "pending":
+    expected = _hash_token(token, row["token_salt"])
+    if not hmac.compare_digest(expected, row["token_hash"]):
         return None
     return dict(row)
 

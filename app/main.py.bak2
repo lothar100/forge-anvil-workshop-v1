@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import re
 import subprocess
 import socket
@@ -38,7 +37,7 @@ load_dotenv(PROJECT_DIR / ".env")
 
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "http://localhost:9000").rstrip("/")
 APPROVER_EMAIL = os.getenv("APPROVER_EMAIL") or os.getenv("EMAIL_TO") or os.getenv("MAIL_TO") or os.getenv("SMTP_USER") or ""
-# APPROVAL_UPSTREAM_BASE_URL removed - email links go directly through gateway
+APPROVAL_UPSTREAM_BASE_URL = (os.getenv("APPROVAL_UPSTREAM_BASE_URL") or "").rstrip("/")
 
 SCHEDULER_TICK_SECONDS = int(os.getenv("SCHEDULER_TICK_SECONDS", "20"))
 OPENCLAW_POLL_SECONDS = int(os.getenv("OPENCLAW_POLL_SECONDS", "20"))
@@ -98,6 +97,7 @@ def _ensure_local_openclaw() -> None:
     if _tcp_listening('127.0.0.1', 9100):
         return
 
+    import sys
     log_path = PROJECT_DIR / 'data' / 'openclaw.log'
     cmd = [sys.executable,'-m','uvicorn','app.openclaw_local:app','--host','0.0.0.0','--port','9100']
     subprocess.Popen(cmd, cwd=str(PROJECT_DIR), stdout=open(log_path, 'ab'), stderr=subprocess.STDOUT)
@@ -466,12 +466,6 @@ def task_detail(request: Request, task_id: int) -> HTMLResponse:
     executor_logs = con.execute(
         "SELECT * FROM executor_log WHERE task_id=? ORDER BY id ASC", (task_id,)
     ).fetchall()
-    # Get latest decision for this task
-    latest_decision = con.execute(
-        "SELECT decision_id, status, requested_at, decided_at, expires_at FROM decisions"
-        " WHERE entity_type='task' AND entity_id=? ORDER BY rowid DESC LIMIT 1",
-        (task_id,)
-    ).fetchone()
     con.close()
 
     if not task:
@@ -480,7 +474,7 @@ def task_detail(request: Request, task_id: int) -> HTMLResponse:
     statuses = ["pending", "approved", "rejected", "active", "running", "completed", "blocked", "paused_limit", "queued_for_claude", "dev_done", "review", "done"]
     return templates.TemplateResponse(
         "task_detail.html",
-        {"request": request, "task": task, "agents": agents, "statuses": statuses, "now": utcnow_iso(), "executor_logs": executor_logs, "latest_decision": latest_decision},
+        {"request": request, "task": task, "agents": agents, "statuses": statuses, "now": utcnow_iso(), "executor_logs": executor_logs},
     )
 
 
@@ -615,6 +609,11 @@ async def api_tasks_move(request: Request, payload: dict) -> JSONResponse:
             ttl_hours=int(os.getenv('APPROVAL_TTL_HOURS', '72')),
             result_markdown=md,
         )
+        try:
+            await _upstream_call('/approve' if approve else '/reject', decision_id, token)
+        except Exception as e:
+            _log('upstream_call_error', 'decision', decision_id, str(e))
+
         apply_decision(
             decision_id=decision_id,
             approve=approve,
@@ -656,26 +655,6 @@ def _request_approval_for_task(task_id: int) -> None:
 
     if task['status'] != 'pending':
         return
-
-    # Check if there's already a valid pending decision — don't supersede unnecessarily
-    con_chk = connect()
-    existing = con_chk.execute(
-        "SELECT decision_id, expires_at FROM decisions"
-        " WHERE entity_type='task' AND entity_id=? AND action='start_task' AND status='pending'"
-        " ORDER BY rowid DESC LIMIT 1",
-        (task_id,),
-    ).fetchone()
-    con_chk.close()
-    if existing:
-        # Only skip if not expired
-        try:
-            exp = datetime.fromisoformat(existing['expires_at'])
-            if datetime.now(timezone.utc) < exp:
-                _log("approval_skip_existing", "task", str(task_id),
-                     f"valid pending decision {existing['decision_id']} exists, not re-creating")
-                return
-        except Exception:
-            pass
 
     con2 = connect()
     con2.execute("UPDATE decisions SET status='superseded', updated_at=? WHERE entity_type='task' AND entity_id=? AND action='start_task' AND status='pending'", (utcnow_iso(), task_id))
@@ -1018,32 +997,20 @@ def _decision_result_page(request: Request, decision: dict, *, title: str, note:
     )
 
 
-# _upstream_call removed - not needed since email links go directly through gateway
-
-
-
-def _minimal_result_html(title: str, message: str, color: str) -> str:
-    """Return a tiny self-contained HTML page for mobile email approval clicks."""
-    # Extract emoji from title for large display
-    emoji = title.split()[0] if title else ""
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title></head>
-<body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f172a;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">
-<div style="text-align:center;padding:32px;">
-  <div style="font-size:48px;margin-bottom:16px;">{emoji}</div>
-  <h1 style="color:{color};font-size:24px;margin:0 0 8px 0;">{title}</h1>
-  <p style="color:#94a3b8;font-size:16px;margin:0;">{message}</p>
-  <p style="color:#475569;font-size:12px;margin-top:24px;">You can close this tab.</p>
-</div>
-</body></html>"""
+async def _upstream_call(path: str, decision_id: str, token: str) -> Optional[dict]:
+    if not APPROVAL_UPSTREAM_BASE_URL:
+        return None
+    url = f"{APPROVAL_UPSTREAM_BASE_URL}{path}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url, params={"decision_id": decision_id, "token": token})
+        return {"status_code": r.status_code, "text": r.text}
 
 
 @app.get("/approve", response_class=HTMLResponse)
 async def approve(request: Request, decision_id: str, token: str) -> HTMLResponse:
     d = verify_decision_token(decision_id=decision_id, token=token)
     if not d:
-        return HTMLResponse(_minimal_result_html("❌ Invalid Token", "This approval link is invalid or expired.", "#dc2626"), status_code=403)
+        return HTMLResponse("Invalid or expired token", status_code=403)
 
     d2 = apply_decision(
         decision_id=decision_id,
@@ -1052,18 +1019,16 @@ async def approve(request: Request, decision_id: str, token: str) -> HTMLRespons
         decider_ua=request.headers.get("user-agent"),
     )
 
-    if not d2:
-        return HTMLResponse(_minimal_result_html("❌ Error", "Could not process this approval.", "#dc2626"), status_code=500)
-    if d2["status"] != "approved":
-        return HTMLResponse(_minimal_result_html("⚠️ Already Processed", f"This decision was already {d2['status']}.", "#f59e0b"), status_code=409)
-    return HTMLResponse(_minimal_result_html("✅ Approved", f"Task approved successfully.", "#16a34a"))
+    upstream = await _upstream_call("/approve", decision_id, token)
+    note = f"Upstream: {upstream}" if upstream else ""
+    return _decision_result_page(request, d2 or d, title="Approved", note=note)
 
 
 @app.get("/reject", response_class=HTMLResponse)
 async def reject(request: Request, decision_id: str, token: str) -> HTMLResponse:
     d = verify_decision_token(decision_id=decision_id, token=token)
     if not d:
-        return HTMLResponse(_minimal_result_html("❌ Invalid Token", "This approval link is invalid or expired.", "#dc2626"), status_code=403)
+        return HTMLResponse("Invalid or expired token", status_code=403)
 
     d2 = apply_decision(
         decision_id=decision_id,
@@ -1072,11 +1037,9 @@ async def reject(request: Request, decision_id: str, token: str) -> HTMLResponse
         decider_ua=request.headers.get("user-agent"),
     )
 
-    if not d2:
-        return HTMLResponse(_minimal_result_html("❌ Error", "Could not process this rejection.", "#dc2626"), status_code=500)
-    if d2["status"] != "rejected":
-        return HTMLResponse(_minimal_result_html("⚠️ Already Processed", f"This decision was already {d2['status']}.", "#f59e0b"), status_code=409)
-    return HTMLResponse(_minimal_result_html("🚫 Rejected", "Task rejected.", "#dc2626"))
+    upstream = await _upstream_call("/reject", decision_id, token)
+    note = f"Upstream: {upstream}" if upstream else ""
+    return _decision_result_page(request, d2 or d, title="Rejected", note=note)
 
 
 @app.get("/status")
@@ -1084,6 +1047,10 @@ async def status(decision_id: str, token: str) -> JSONResponse:
     d = verify_decision_token(decision_id=decision_id, token=token)
     if not d:
         return JSONResponse({"ok": False, "error": "invalid_or_expired"}, status_code=403)
+
+    upstream = None
+    if APPROVAL_UPSTREAM_BASE_URL:
+        upstream = await _upstream_call("/status", decision_id, token)
 
     return JSONResponse(
         {
@@ -1094,7 +1061,7 @@ async def status(decision_id: str, token: str) -> JSONResponse:
             "entity_id": d["entity_id"],
             "action": d["action"],
             "expires_at": d["expires_at"],
-            # "upstream": removed - no longer used,
+            "upstream": upstream,
         }
     )
 
@@ -1142,32 +1109,6 @@ def _tick_scheduled_tasks() -> None:
         con2.close()
         if not d:
             _request_approval_for_task(int(r['id']))
-
-    # 1.5) Poll decision statuses for pending tasks — sync approved/rejected
-    #      decisions to task status. Safety net if /approve callback missed task update.
-    con_poll = connect()
-    pending_approval_tasks = con_poll.execute(
-        "SELECT id FROM tasks WHERE status='pending' AND requires_approval=1"
-    ).fetchall()
-    for pt in pending_approval_tasks:
-        tid = pt["id"]
-        latest_dec = con_poll.execute(
-            "SELECT decision_id, status FROM decisions"
-            " WHERE entity_type='task' AND entity_id=?"
-            " AND status IN ('approved','rejected')"
-            " ORDER BY rowid DESC LIMIT 1",
-            (tid,),
-        ).fetchone()
-        if latest_dec:
-            new_task_status = "approved" if latest_dec["status"] == "approved" else "rejected"
-            con_poll.execute(
-                "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
-                (new_task_status, utcnow_iso(), tid),
-            )
-            con_poll.commit()
-            _log("decision_sync", "task", str(tid),
-                 f"synced task to '{new_task_status}' from decision {latest_dec['decision_id']}")
-    con_poll.close()
 
     # 2) dispatch approved tasks via pipeline executor
     con = connect()

@@ -34,7 +34,7 @@
           {% set role_map = {'programming':'Ada','architecture':'Jorven','reviewing':'Iris','reporting':'Quimby',
                              'programmer':'Ada','architect':'Jorven','reviewer':'Iris','reporter':'Quimby'} %}
           {% for a in agents %}
-            {% set name = role_map.get((a['role'] or '')|lower, role_map.get((a['name'] or '')|lower, a['name'])) %}
+            {% set name = a['name'] %}
             <a href="/agents/{{ a['id'] }}" class="block rounded border border-slate-700 bg-slate-950/20 px-3 py-2 hover:bg-slate-800">
               <div class="flex items-center justify-between">
                 <div class="font-semibold">{{ name }}</div>

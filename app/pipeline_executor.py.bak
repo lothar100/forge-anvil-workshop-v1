@@ -1,12 +1,8 @@
 """Pipeline Executor Engine.
 
 Reads a pipeline config (blocks_json) from the DB and executes blocks
-in sequence, routing work to either OpenRouter (via OpenClaw HTTP API on
-port 9100) or the Claude CLI executor depending on each block's config.
-
-IMPORTANT: All OpenRouter/LLM work is delegated to OpenClaw via HTTP.
-This ensures clean separation -- no Agent Zero tool definitions or system
-prompts leak into task execution.
+in sequence, routing work to either OpenRouter (via OpenClaw) or the
+Claude CLI executor depending on each block's configuration.
 """
 from __future__ import annotations
 
@@ -20,7 +16,6 @@ from typing import Any
 from .db import connect
 from .claude_executor import execute_claude_cli, CLAUDE_SUCCESS
 from . import claude_health
-from .openclaw import dispatch_job, get_status, normalize_state
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,92 +103,46 @@ def _load_agent_files(agent_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _execute_openrouter(prompt: str, model: str, system_prompt: str = "") -> dict[str, Any]:
-    """Execute a task through OpenRouter via OpenClaw HTTP API.
+    """Execute a task through OpenRouter via the LangGraph runtime.
 
-    This dispatches the job to OpenClaw on port 9100 via HTTP, then polls
-    for completion. OpenClaw's LangGraph runtime calls OpenRouter with
-    ONLY the task prompt and agent system prompt -- no Agent Zero framework
-    overhead leaks into the execution.
+    This calls the runtime directly (in-process) rather than going through
+    the HTTP client, so we can inject custom system prompts.
     """
-    start = time.monotonic()
+    from .openclaw_langgraph_runtime import run_job_langgraph
 
-    # Build the agent dict for the HTTP payload
-    agent_payload: dict[str, Any] = {"role": "general", "model": model}
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not api_key:
+        return {"success": False, "output": "", "error": "openrouter_api_key_missing", "executor": "OpenRouter", "duration_seconds": 0, "failure_type": None}
+
+    payload = {
+        "task": {"title": "Pipeline Task", "description": prompt},
+        "agent": {"role": "general", "model": model},
+        "openrouter_api_key": api_key,
+        "metadata": {},
+    }
+    # If we have a custom system prompt, inject it via the agent role override
     if system_prompt:
-        agent_payload["_system_prompt_override"] = system_prompt
+        payload["agent"]["_system_prompt_override"] = system_prompt
 
-    # Dispatch job via HTTP to OpenClaw (port 9100)
-    dispatch_result = dispatch_job(
-        title="Pipeline Task",
-        description=prompt,
-        agent=agent_payload,
-        metadata={},
-    )
+    start = time.monotonic()
+    result = run_job_langgraph(payload=payload)
+    elapsed = time.monotonic() - start
 
-    if not dispatch_result.get("ok"):
-        elapsed = time.monotonic() - start
+    if result.get("ok"):
         return {
-            "success": False,
-            "output": "",
-            "error": dispatch_result.get("error", "dispatch_failed"),
-            "executor": "OpenRouter (via OpenClaw HTTP)",
+            "success": True,
+            "output": result.get("output", ""),
+            "executor": "OpenRouter",
             "duration_seconds": round(elapsed, 3),
+            "error": None,
             "failure_type": None,
         }
-
-    job_id = dispatch_result["job_id"]
-    _log("openclaw_job_dispatched", "pipeline", job_id, f"model={model}", layer="openclaw", model=model)
-
-    # Poll for completion
-    poll_interval = int(os.getenv("OPENCLAW_PIPELINE_POLL_SECONDS", "5"))
-    timeout = int(os.getenv("OPENCLAW_PIPELINE_TIMEOUT_SECONDS", "300"))
-    deadline = time.monotonic() + timeout
-    last_state = "queued"
-
-    while time.monotonic() < deadline:
-        time.sleep(poll_interval)
-
-        status_result = get_status(job_id=job_id)
-        if not status_result.get("ok"):
-            # Transient error -- keep polling
-            continue
-
-        raw = status_result.get("raw", {})
-        state = normalize_state(raw)
-        last_state = state
-
-        if state == "completed":
-            elapsed = time.monotonic() - start
-            output = str(raw.get("result") or raw.get("output") or "")
-            return {
-                "success": True,
-                "output": output,
-                "executor": "OpenRouter (via OpenClaw HTTP)",
-                "duration_seconds": round(elapsed, 3),
-                "error": None,
-                "failure_type": None,
-            }
-
-        if state == "failed":
-            elapsed = time.monotonic() - start
-            error_msg = str(raw.get("error") or "openclaw_job_failed")
-            return {
-                "success": False,
-                "output": "",
-                "executor": "OpenRouter (via OpenClaw HTTP)",
-                "duration_seconds": round(elapsed, 3),
-                "error": error_msg,
-                "failure_type": None,
-            }
-
-    # Timeout
-    elapsed = time.monotonic() - start
     return {
         "success": False,
         "output": "",
-        "executor": "OpenRouter (via OpenClaw HTTP)",
+        "executor": "OpenRouter",
         "duration_seconds": round(elapsed, 3),
-        "error": f"timeout_after_{timeout}s (last_state={last_state})",
+        "error": result.get("error", "unknown"),
         "failure_type": None,
     }
 

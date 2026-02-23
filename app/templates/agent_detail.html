@@ -43,7 +43,7 @@
           <select name="pipeline_id" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700">
             <option value="">Default pipeline</option>
             {% for p in pipelines %}
-              <option value="{{ p['id'] }}" {% if agent.get('pipeline_id') is not none and agent['pipeline_id'] == p['id'] %}selected{% endif %}>{{ p['name'] }} ({{ p['task_type'] or 'any' }})</option>
+              <option value="{{ p['id'] }}" {% if agent['pipeline_id'] is not none and agent['pipeline_id'] == p['id'] %}selected{% endif %}>{{ p['name'] }} ({{ p['task_type'] or 'any' }})</option>
             {% endfor %}
           </select>
         </div>
