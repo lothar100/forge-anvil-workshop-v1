@@ -2,6 +2,13 @@
 set -euo pipefail
 cd /a0/usr/workdir/zeroclaw
 
+# Ensure Claude CLI is installed
+if ! command -v claude &>/dev/null; then
+  echo "[start_zeroclaw] Installing Claude CLI..." >&2
+  npm install -g @anthropic-ai/claude-code 2>/dev/null || true
+fi
+echo "[start_zeroclaw] Claude CLI: $(claude --version 2>/dev/null || echo 'not available')" >&2
+
 # venv bootstrap (idempotent)
 if [ ! -d venv ]; then
   python3 -m venv venv

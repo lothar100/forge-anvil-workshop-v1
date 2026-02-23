@@ -15,6 +15,17 @@ if [ -f .env ]; then
   set +a
 fi
 
+# Ensure Claude CLI is installed
+if ! command -v claude &>/dev/null; then
+  echo "[run_zeroclaw] Installing Claude CLI..." >&2
+  if command -v npm &>/dev/null; then
+    npm install -g @anthropic-ai/claude-code 2>/dev/null || true
+  else
+    echo "[run_zeroclaw] WARNING: npm not found, Claude CLI not installed" >&2
+  fi
+fi
+echo "[run_zeroclaw] Claude CLI: $(claude --version 2>/dev/null || echo 'not available')" >&2
+
 # Expectations (Option 4)
 export ZEROCLAW_EXPECT_CWD="${ZEROCLAW_EXPECT_CWD:-$ROOT}"
 export ZEROCLAW_EXPECT_DB="${ZEROCLAW_EXPECT_DB:-$ROOT/data/zeroclaw.db}"

@@ -234,8 +234,10 @@ def _ensure_review_task_for(con, *, source_task_row: dict, reviewer_agent_id: Op
     src_id = int(source_task_row["id"])
     marker = f"[review_of_task_id:{src_id}]"
 
-    # Avoid review-of-review loops
-    if marker in (source_task_row.get("description") or ""):
+    # Avoid review-of-review loops — skip if source task is itself a review
+    src_desc = (source_task_row.get("description") or "").lower()
+    src_title = (source_task_row.get("title") or "").lower()
+    if "[review_of_task_id:" in src_desc or src_title.startswith("review:"):
         return False
 
     existing = con.execute(
@@ -293,7 +295,13 @@ def tick_routines() -> None:
 
             created_any = False
             for src in review_rows:
-                if _ensure_review_task_for(con, source_task_row=dict(src), reviewer_agent_id=reviewer_id):
+                src_d = dict(src)
+                # Skip tasks that are themselves reviews
+                src_title = (src_d.get("title") or "").lower().strip()
+                src_desc = (src_d.get("description") or "").lower()
+                if src_title.startswith("review:") or "[review_of_task_id:" in src_desc:
+                    continue
+                if _ensure_review_task_for(con, source_task_row=src_d, reviewer_agent_id=reviewer_id):
                     created_any = True
 
             if created_any:

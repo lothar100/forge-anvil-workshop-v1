@@ -5,6 +5,7 @@
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/dashboard">&#8592; Dashboard</a>
             <a class="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 font-semibold text-sm" href="/tasks/new">+ New task</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/agents">Agents</a>
+            <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/pipelines">Pipelines</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/routines">Routines</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/critiques">Critiques</a>
             <a class="px-3 py-1.5 rounded bg-slate-800 border border-slate-700 hover:bg-slate-700 text-sm" href="/logs">Logs</a>
@@ -15,37 +16,119 @@
 {% endblock %}
 {% block content %}
 <div class="max-w-6xl mx-auto">
-<div class="bg-slate-900 rounded-xl p-4 border border-slate-800">
-  <div class="text-xl font-bold">Agent #{{ agent['id'] }} — {{ agent['name'] }}</div>
-  <div class="text-sm text-slate-300 zc-debug hidden">Created {{ agent['created_at'] }} • Updated {{ agent['updated_at'] }}</div>
 
-  <form class="mt-4 space-y-3" method="post" action="/agents/{{ agent['id'] }}/update">
-    <div>
-      <label class="text-sm text-slate-300">Name</label>
-      <input name="name" value="{{ agent['name'] }}" required class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700" />
+  <!-- Config Section -->
+  <div class="bg-slate-900 rounded-xl p-4 border border-slate-800">
+    <div class="text-xl font-bold">Agent #{{ agent['id'] }} — {{ agent['name'] }}</div>
+    <div class="text-sm text-slate-300 zc-debug hidden">Created {{ agent['created_at'] }} • Updated {{ agent['updated_at'] }}</div>
+
+    <form class="mt-4 space-y-3" method="post" action="/agents/{{ agent['id'] }}/update">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label class="text-sm text-slate-300">Name</label>
+          <input name="name" value="{{ agent['name'] }}" required class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700" />
+        </div>
+
+        <div>
+          <label class="text-sm text-slate-300">Role</label>
+          <select name="role" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700">
+            {% for r in roles %}
+              <option value="{{ r }}" {% if r==agent['role'] %}selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div>
+          <label class="text-sm text-slate-300">Pipeline</label>
+          <select name="pipeline_id" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700">
+            <option value="">Default pipeline</option>
+            {% for p in pipelines %}
+              <option value="{{ p['id'] }}" {% if agent['pipeline_id'] is not none and agent['pipeline_id'] == p['id'] %}selected{% endif %}>{{ p['name'] }} ({{ p['task_type'] or 'any' }})</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <label class="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="is_active" {% if agent['is_active'] %}checked{% endif %} />
+        Active
+      </label>
+
+      <button class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 font-semibold">Save</button>
+    </form>
+  </div>
+
+  <!-- Internal Files Section -->
+  <div class="mt-4 bg-slate-900 rounded-xl p-4 border border-slate-800">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div>
+        <div class="text-lg font-bold">Internal Files</div>
+        <div class="text-xs text-slate-400">Personality, instructions, and context injected into LLM prompts</div>
+      </div>
     </div>
 
-    <div>
-      <label class="text-sm text-slate-300">Role</label>
-      <select name="role" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700">
-        {% for r in roles %}
-          <option value="{{ r }}" {% if r==agent['role'] %}selected{% endif %}>{{ r }}</option>
-        {% endfor %}
-      </select>
+    <!-- Tab navigation -->
+    <div class="mt-3 flex flex-wrap gap-1 border-b border-slate-800 pb-1" id="fileTabs">
+      {% for fname in agent_files %}
+        <button type="button"
+                class="file-tab px-3 py-1.5 rounded-t text-sm {% if loop.first %}bg-slate-800 text-slate-100{% else %}bg-slate-950 text-slate-400 hover:text-slate-200{% endif %}"
+                data-file="{{ fname }}"
+                onclick="switchTab('{{ fname }}')">
+          {{ fname }}
+        </button>
+      {% endfor %}
+      <button type="button" class="px-3 py-1.5 rounded-t text-sm bg-slate-950 text-emerald-400 hover:text-emerald-300" onclick="showAddFile()">+ Add file</button>
     </div>
 
-    <div>
-      <label class="text-sm text-slate-300">Model</label>
-      <input name="model" value="{{ agent['model'] }}" class="w-full mt-1 px-3 py-2 rounded bg-slate-800 border border-slate-700" />
+    <!-- Tab content -->
+    {% for fname in agent_files %}
+      <div class="file-content {% if not loop.first %}hidden{% endif %}" data-file="{{ fname }}">
+        <form method="post" action="/agents/{{ agent['id'] }}/files/{{ fname }}">
+          <textarea name="content" rows="20" class="w-full mt-2 px-3 py-2 rounded bg-slate-800 border border-slate-700 font-mono text-sm">{{ file_contents.get(fname, '') }}</textarea>
+          <div class="flex items-center gap-2 mt-2">
+            <button type="submit" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 font-semibold text-sm">Save {{ fname }}</button>
+            {% if fname not in ('SOUL.md', 'INSTRUCTIONS.md', 'CONTEXT.md') %}
+              <a href="/agents/{{ agent['id'] }}/files/{{ fname }}/delete" onclick="return confirm('Delete {{ fname }}?')" class="px-3 py-2 rounded bg-rose-700 hover:bg-rose-600 text-sm">Delete</a>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    {% endfor %}
+
+    <!-- Add file form (hidden) -->
+    <div id="addFileForm" class="hidden mt-3">
+      <form method="post" action="/agents/{{ agent['id'] }}/files/new" class="flex items-center gap-2">
+        <input name="filename" placeholder="filename.md" required pattern="[a-zA-Z0-9_-]+\.md" class="px-3 py-2 rounded bg-slate-800 border border-slate-700 text-sm" />
+        <button type="submit" class="px-3 py-2 rounded bg-emerald-700 hover:bg-emerald-600 text-sm font-semibold">Create</button>
+        <button type="button" onclick="hideAddFile()" class="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm">Cancel</button>
+      </form>
     </div>
+  </div>
 
-    <label class="flex items-center gap-2 text-sm">
-      <input type="checkbox" name="is_active" {% if agent['is_active'] %}checked{% endif %} />
-      Active
-    </label>
-
-    <button class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 font-semibold">Save</button>
-  </form>
 </div>
-</div>
+
+<script>
+function switchTab(fname) {
+  document.querySelectorAll('.file-tab').forEach(t => {
+    t.classList.remove('bg-slate-800', 'text-slate-100');
+    t.classList.add('bg-slate-950', 'text-slate-400');
+  });
+  document.querySelectorAll('.file-content').forEach(c => c.classList.add('hidden'));
+
+  const tab = document.querySelector('.file-tab[data-file="' + fname + '"]');
+  const content = document.querySelector('.file-content[data-file="' + fname + '"]');
+  if (tab) {
+    tab.classList.remove('bg-slate-950', 'text-slate-400');
+    tab.classList.add('bg-slate-800', 'text-slate-100');
+  }
+  if (content) content.classList.remove('hidden');
+}
+
+function showAddFile() {
+  document.getElementById('addFileForm').classList.remove('hidden');
+}
+function hideAddFile() {
+  document.getElementById('addFileForm').classList.add('hidden');
+}
+</script>
 {% endblock %}

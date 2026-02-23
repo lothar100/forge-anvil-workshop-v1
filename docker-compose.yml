@@ -4,6 +4,8 @@ services:
     build: .
     ports:
       - "9000:9000"
+    volumes:
+      - ~/.claude:/root/.claude
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/version"]
