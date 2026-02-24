@@ -19,7 +19,7 @@ When you receive a `/zero` command (whether from Agent Zero or typed directly), 
 ### Rules
 
 1. **NEVER attempt to fulfill a /zero task yourself.** Your job is to POST to ZeroClaw, not to write code, plan architecture, or generate reports.
-2. **If the ZeroClaw service (localhost:9000) is unreachable, say so.** Tell the user the service is down and suggest `python -m uvicorn app.main:app --host 0.0.0.0 --port 9000`. Do NOT fall back to doing the work yourself.
+2. **If the ZeroClaw service (localhost:9000) is unreachable, start it.** Run `python start.py` to bring services up. If that fails, tell the user. Do NOT fall back to doing the work yourself.
 3. **If the HTTP POST fails for any reason, report the error.** Do not silently retry via other means or attempt the task directly.
 4. **Do not use A2A or any other protocol as a fallback.** The only path for /zero commands is the ZeroClaw HTTP API.
 
@@ -44,12 +44,17 @@ When you receive a `/zero` command (whether from Agent Zero or typed directly), 
 - Agent lookup: `SELECT id, name, role FROM agents WHERE LOWER(name)=LOWER(?)`
 - DB path: `data/zeroclaw.db`
 
-## Starting Services
+## Starting Services (IMPORTANT — do this first)
+
+Before any /zero command will work, ZeroClaw must be running. Use the startup script:
 
 ```bash
-# ZeroClaw (port 9000)
-python -m uvicorn app.main:app --host 0.0.0.0 --port 9000
-
-# OpenClaw starts automatically with ZeroClaw (port 9100)
-# Or manually: python -m uvicorn app.openclaw_local:app --host 0.0.0.0 --port 9100
+python start.py           # Start both services (background)
+python start.py --check   # Check if services are up
+python start.py --stop    # Stop services
 ```
+
+Or use the `/bootstrap` command if in Claude Code.
+
+ZeroClaw runs on port 9000. OpenClaw auto-starts on port 9100 with it.
+If the service is down when a /zero command arrives, tell the user to run `python start.py`.
