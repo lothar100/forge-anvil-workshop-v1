@@ -2,9 +2,10 @@
 """ZeroClaw + OpenClaw auto-startup script.
 
 Usage:
-    python start.py          # Start ZeroClaw (OpenClaw auto-starts with it)
-    python start.py --check  # Just check if services are running
-    python start.py --stop   # Stop background services
+    python start.py                          # Start services
+    python start.py --zip path/to/code.zip   # Extract zip then start services
+    python start.py --check                  # Just check if services are running
+    python start.py --stop                   # Stop background services
 
 ZeroClaw (port 9000) handles the dashboard, task board, and pipelines.
 OpenClaw (port 9100) is auto-launched by ZeroClaw on startup.
@@ -16,6 +17,8 @@ import socket
 import subprocess
 import time
 import signal
+import zipfile
+import shutil
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -91,6 +94,63 @@ def stop_services():
         print("[stop] ZeroClaw stopped.")
     else:
         print("[stop] WARNING: Port still in use. May need manual cleanup.")
+
+
+def deploy_zip(zip_path: str):
+    """Extract a zip file into the project directory, updating code in place.
+
+    Safely extracts app/, data/agents/, templates, and other project files
+    from a zip archive. Existing files are overwritten; new files are added.
+    The zip can contain files at the root or inside a single top-level folder.
+    """
+    zp = Path(zip_path).resolve()
+    if not zp.exists():
+        print(f"[deploy] ERROR: Zip not found: {zp}")
+        return False
+    if not zipfile.is_zipfile(str(zp)):
+        print(f"[deploy] ERROR: Not a valid zip file: {zp}")
+        return False
+
+    print(f"[deploy] Extracting {zp.name} into {PROJECT_DIR}...")
+
+    with zipfile.ZipFile(str(zp), "r") as z:
+        names = z.namelist()
+
+        # Detect if everything is nested under a single top-level directory
+        # e.g. "dashboard_scaffold/app/main.py" → strip "dashboard_scaffold/"
+        prefix = ""
+        top_dirs = set()
+        for n in names:
+            parts = n.split("/")
+            if len(parts) > 1:
+                top_dirs.add(parts[0])
+        if len(top_dirs) == 1 and all(n.startswith(list(top_dirs)[0] + "/") for n in names if n):
+            prefix = list(top_dirs)[0] + "/"
+            print(f"[deploy] Detected top-level folder '{prefix.rstrip('/')}' — stripping it")
+
+        extracted = 0
+        for info in z.infolist():
+            # Skip directories
+            if info.is_dir():
+                continue
+
+            # Strip prefix if present
+            rel = info.filename
+            if prefix and rel.startswith(prefix):
+                rel = rel[len(prefix):]
+            if not rel:
+                continue
+
+            dest = PROJECT_DIR / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            with z.open(info) as src, open(dest, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            extracted += 1
+
+        print(f"[deploy] Extracted {extracted} files")
+
+    return True
 
 
 def start_services():
@@ -171,6 +231,22 @@ def main():
     if "--stop" in sys.argv:
         stop_services()
         sys.exit(0)
+
+    # Deploy zip if provided (--zip path/to/file.zip)
+    if "--zip" in sys.argv:
+        idx = sys.argv.index("--zip")
+        if idx + 1 >= len(sys.argv):
+            print("[deploy] ERROR: --zip requires a path argument")
+            sys.exit(1)
+        zip_path = sys.argv[idx + 1]
+        if not deploy_zip(zip_path):
+            sys.exit(1)
+        # If services are running, restart them to pick up new code
+        status = check_status()
+        if status["zeroclaw"]:
+            print("[deploy] Restarting services to pick up new code...")
+            stop_services()
+            time.sleep(1)
 
     ok = start_services()
     sys.exit(0 if ok else 1)

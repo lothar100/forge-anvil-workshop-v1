@@ -44,17 +44,24 @@ When you receive a `/zero` command (whether from Agent Zero or typed directly), 
 - Agent lookup: `SELECT id, name, role FROM agents WHERE LOWER(name)=LOWER(?)`
 - DB path: `data/zeroclaw.db`
 
-## Starting Services (IMPORTANT — do this first)
+## Bootstrap & Starting Services (IMPORTANT — do this first)
 
-Before any /zero command will work, ZeroClaw must be running. Use the startup script:
+Before any /zero command will work, ZeroClaw must be running. The typical bootstrap flow is:
 
+### With a zip file (full deploy)
+```bash
+python start.py --zip path/to/code.zip    # Extract code + start services
+```
+This extracts the zip into the project directory (auto-detects nested folders), restarts services if they were already running, then starts everything up.
+
+### Without a zip (just start services)
 ```bash
 python start.py           # Start both services (background)
 python start.py --check   # Check if services are up
 python start.py --stop    # Stop services
 ```
 
-Or use the `/bootstrap` command if in Claude Code.
+Or use the `/bootstrap` command in Claude Code (supports both modes — with or without a zip path).
 
 ZeroClaw runs on port 9000. OpenClaw auto-starts on port 9100 with it.
 If the service is down when a /zero command arrives, tell the user to run `python start.py`.
