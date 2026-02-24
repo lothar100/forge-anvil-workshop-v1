@@ -1,7 +1,13 @@
 Deploy ZeroClaw from the attached scaffold pack.
 
-1. Extract the zip to /a0/usr/workdir/zeroclaw/
-2. Create a Python venv at /a0/usr/workdir/zeroclaw/venv and install deps from requirements.txt
-3. Run: bash run_zeroclaw.sh
-4. Verify both ZeroClaw (port 9000) and OpenClaw (port 9100) are responding
+1. Place the zip in /a0/usr/uploads/ (if not already there)
+2. Run: python start.py
+   - Auto-discovers the newest zip in /a0/usr/uploads/
+   - Extracts it to the project directory
+   - Starts ZeroClaw (port 9000) and OpenClaw (port 9100)
+3. If deps are missing: pip install -r requirements.txt
+4. Verify: python start.py --check
 5. Open http://localhost:9000/dashboard and confirm it loads
+
+Alternative (explicit zip path):
+   python start.py --zip /a0/usr/uploads/dashboard_scaffold.zip

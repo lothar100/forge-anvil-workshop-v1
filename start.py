@@ -2,13 +2,15 @@
 """ZeroClaw + OpenClaw auto-startup script.
 
 Usage:
-    python start.py                          # Start services
-    python start.py --zip path/to/code.zip   # Extract zip then start services
+    python start.py                          # Auto-discover zip + start services
+    python start.py --zip path/to/code.zip   # Explicit zip + start services
     python start.py --check                  # Just check if services are running
     python start.py --stop                   # Stop background services
 
-ZeroClaw (port 9000) handles the dashboard, task board, and pipelines.
-OpenClaw (port 9100) is auto-launched by ZeroClaw on startup.
+On startup (without --check/--stop), the script will:
+  1. Look for a zip in /a0/usr/uploads/ (Agent Zero upload dir) or use --zip
+  2. Extract it into the project directory if found
+  3. Start ZeroClaw on port 9000 (which auto-launches OpenClaw on port 9100)
 """
 
 import os
@@ -25,6 +27,10 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_DIR / "data"
 PID_FILE = DATA_DIR / "zeroclaw.pid"
 LOG_FILE = DATA_DIR / "zeroclaw.log"
+
+# Agent Zero filesystem paths
+A0_UPLOADS_DIR = Path(os.getenv("A0_UPLOADS_DIR", "/a0/usr/uploads"))
+A0_WORKDIR = Path(os.getenv("A0_WORKDIR", "/a0/usr/workdir/zeroclaw"))
 
 ZEROCLAW_PORT = int(os.getenv("ZEROCLAW_PORT", "9000"))
 OPENCLAW_PORT = int(os.getenv("OPENCLAW_PORT", "9100"))
@@ -94,6 +100,26 @@ def stop_services():
         print("[stop] ZeroClaw stopped.")
     else:
         print("[stop] WARNING: Port still in use. May need manual cleanup.")
+
+
+def find_upload_zip() -> str | None:
+    """Auto-detect the newest zip file in the Agent Zero uploads directory.
+
+    Scans /a0/usr/uploads/ (or A0_UPLOADS_DIR env override) for .zip files
+    and returns the most recently modified one. Returns None if the directory
+    doesn't exist or contains no zips.
+    """
+    if not A0_UPLOADS_DIR.is_dir():
+        return None
+
+    zips = sorted(A0_UPLOADS_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not zips:
+        return None
+
+    print(f"[discover] Found {len(zips)} zip(s) in {A0_UPLOADS_DIR}")
+    chosen = zips[0]
+    print(f"[discover] Using newest: {chosen.name}")
+    return str(chosen)
 
 
 def deploy_zip(zip_path: str):
@@ -232,13 +258,19 @@ def main():
         stop_services()
         sys.exit(0)
 
-    # Deploy zip if provided (--zip path/to/file.zip)
+    # Deploy zip if provided or auto-discovered
+    zip_path = None
     if "--zip" in sys.argv:
         idx = sys.argv.index("--zip")
         if idx + 1 >= len(sys.argv):
             print("[deploy] ERROR: --zip requires a path argument")
             sys.exit(1)
         zip_path = sys.argv[idx + 1]
+    else:
+        # Auto-discover from Agent Zero uploads dir (/a0/usr/uploads/)
+        zip_path = find_upload_zip()
+
+    if zip_path:
         if not deploy_zip(zip_path):
             sys.exit(1)
         # If services are running, restart them to pick up new code
